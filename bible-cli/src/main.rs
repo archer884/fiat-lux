@@ -1,34 +1,36 @@
 use std::{
-    fmt,
+    fmt, io,
     num::{NonZeroU8, ParseIntError},
     str::FromStr,
 };
 
 use clap::Parser;
+use indexmap::IndexMap;
+use serde::Deserialize;
 
 #[derive(Clone, Debug, Parser)]
 struct Args {
-    verse: Verse,
+    location: Location,
 }
 
 /// A full designator of book, chapter, and verse.
-#[derive(Clone, Debug)]
-struct Verse {
+#[derive(Clone, Copy, Debug)]
+struct Location {
     book: Book,
-    chapter: i32,
-    verse: i32,
+    chapter: u8,
+    verse: u16,
 }
 
-impl fmt::Display for Verse {
+impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let book = &self.book;
         let chapter = self.chapter;
         let verse = self.verse;
-        write!(f, "{book} {chapter}:{verse}")
+        write!(f, "{book} [{chapter}:{verse}]")
     }
 }
 
-impl FromStr for Verse {
+impl FromStr for Location {
     type Err = ParseVerseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -55,7 +57,7 @@ impl FromStr for Verse {
             return Err(ParseVerseError::book(book));
         }
 
-        Ok(Verse {
+        Ok(Location {
             book: book.parse()?,
             chapter: chapter
                 .parse()
@@ -120,7 +122,8 @@ impl ParseVerseError {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
 enum Book {
     Genesis,        // Genesis
     Exodus,         // Exodus
@@ -191,6 +194,84 @@ enum Book {
 }
 
 impl Book {
+    const fn from_u8(u: u8) -> Self {
+        match u - 1 {
+            0 => Book::Genesis,
+            1 => Book::Exodus,
+            2 => Book::Leviticus,
+            3 => Book::Numbers,
+            4 => Book::Deuteronomy,
+            5 => Book::Joshua,
+            6 => Book::Judges,
+            7 => Book::Ruth,
+            8 => Book::Samuel1,
+            9 => Book::Samuel2,
+            10 => Book::Kings1,
+            11 => Book::Kings2,
+            12 => Book::Chronicles1,
+            13 => Book::Chronicles2,
+            14 => Book::Ezra,
+            15 => Book::Nehemiah,
+            16 => Book::Esther,
+            17 => Book::Job,
+            18 => Book::Psalms,
+            19 => Book::Proverbs,
+            20 => Book::Ecclesiastes,
+            21 => Book::SongofSongs,
+            22 => Book::Isaiah,
+            23 => Book::Jeremiah,
+            24 => Book::Lamentations,
+            25 => Book::Ezekiel,
+            26 => Book::Daniel,
+            27 => Book::Hosea,
+            28 => Book::Joel,
+            29 => Book::Amos,
+            30 => Book::Obadiah,
+            31 => Book::Jonah,
+            32 => Book::Micah,
+            33 => Book::Nahum,
+            34 => Book::Habakkuk,
+            35 => Book::Zephaniah,
+            36 => Book::Haggai,
+            37 => Book::Zechariah,
+            38 => Book::Malachi,
+            39 => Book::Matthew,
+            40 => Book::Mark,
+            41 => Book::Luke,
+            42 => Book::John,
+            43 => Book::Acts,
+            44 => Book::Romans,
+            45 => Book::Corinthians1,
+            46 => Book::Corinthians2,
+            47 => Book::Galatians,
+            48 => Book::Ephesians,
+            49 => Book::Philippians,
+            50 => Book::Colossians,
+            51 => Book::Thessalonians1,
+            52 => Book::Thessalonians2,
+            53 => Book::Timothy1,
+            54 => Book::Timothy2,
+            55 => Book::Titus,
+            56 => Book::Philemon,
+            57 => Book::Hebrews,
+            58 => Book::James,
+            59 => Book::Peter1,
+            60 => Book::Peter2,
+            61 => Book::John1,
+            62 => Book::John2,
+            63 => Book::John3,
+            64 => Book::Jude,
+            65 => Book::Revelation,
+
+            _ => panic!("invalid conversion"),
+        }
+    }
+
+    // No idea what I did this for.
+    const fn number(self) -> u8 {
+        self as u8 + 1
+    }
+
     const fn name(self) -> &'static str {
         match self {
             Book::Genesis => "Genesis",
@@ -275,7 +356,7 @@ impl FromStr for Book {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (name, number) = book_name_in_parts(s)?;
         let name = name.to_ascii_uppercase();
-        let number = number.map(|n| u8::from(n));
+        let number = number.map(u8::from);
 
         match name.as_ref() {
             "GENESIS" => Ok(Book::Genesis),
@@ -441,7 +522,115 @@ fn first_numeric_nonnumeric_transition(s: &str) -> Option<usize> {
 fn main() {
     let args = Args::parse();
 
-    println!("{}", args.verse);
+    if let Err(e) = run(&args) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
+fn run(args: &Args) -> io::Result<()> {
+    #[derive(Debug, Deserialize)]
+    pub struct Packet {
+        resultset: Resultset,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Resultset {
+        row: Vec<Row>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Row {
+        field: Vec<Field>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    pub enum Field {
+        Integer(i64),
+        String(String),
+    }
+
+    macro_rules! into_integer {
+        ($i:ty) => {
+            impl From<Field> for $i {
+                fn from(field: Field) -> Self {
+                    match field {
+                        Field::Integer(i) => i as $i,
+                        Field::String(_) => panic!("invalid conversion"),
+                    }
+                }
+            }
+        };
+    }
+
+    into_integer!(u8);
+    into_integer!(u16);
+
+    impl From<Field> for String {
+        fn from(field: Field) -> Self {
+            match field {
+                Field::Integer(_) => panic!("invalid conversion"),
+                Field::String(s) => s,
+            }
+        }
+    }
+
+    let data = include_str!("../../resource/kjv.json");
+    let packet: Packet = serde_json::from_str(data).unwrap();
+
+    let Resultset { row } = packet.resultset;
+    let verses: Vec<Verse> = row
+        .into_iter()
+        .map(|mut field| {
+            let mut columns = field.field.drain(1..);
+            Verse {
+                book: Book::from_u8(columns.next().unwrap().into()),
+                chapter: columns.next().unwrap().into(),
+                verse: columns.next().unwrap().into(),
+                text: columns.next().unwrap().into(),
+            }
+        })
+        .collect();
+
+    let index = build_index(&verses);
+    let location = args.location;
+    let text = load(&index, location)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "verse not found"))?;
+
+    println!("{location} {text}");
+
+    Ok(())
+}
+
+type Index<'a> = IndexMap<Book, IndexMap<u8, IndexMap<u16, &'a str>>>;
+
+struct Verse {
+    book: Book,
+    chapter: u8,
+    verse: u16,
+    text: String,
+}
+
+fn load<'a>(index: &Index<'a>, location: Location) -> Option<&'a str> {
+    index
+        .get(&location.book)?
+        .get(&location.chapter)?
+        .get(&location.verse)
+        .copied()
+}
+
+fn build_index(verses: &[Verse]) -> Index {
+    let mut index: Index = IndexMap::new();
+    for verse in verses {
+        index
+            .entry(verse.book)
+            .or_default()
+            .entry(verse.chapter)
+            .or_default()
+            .insert(verse.verse, &verse.text);
+    }
+    index
 }
 
 #[cfg(test)]
@@ -451,6 +640,7 @@ mod tests {
         use super::first_numeric_nonnumeric_transition as test;
         assert_eq!(Some(2), test("1 Kings"));
         assert_eq!(Some(1), test("1Kings"));
+        assert_eq!(Some(5), test("Kings1"));
         assert_eq!(Some(6), test("Kings 1"));
         assert_eq!(None, test("Exodus"));
     }
