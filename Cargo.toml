@@ -1,0 +1,3 @@
+[workspace]
+members = ["bible-cli"]
+default-members = ["bible-cli"]
