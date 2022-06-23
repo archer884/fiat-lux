@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 
 static ASV_DAT: &str = include_str!("../../resource/asv.dat");
@@ -17,6 +17,28 @@ type Index<'a> = IndexMap<Book, BookIndex<'a>>;
 type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
 
 type ChapterIndex<'a> = IndexMap<u16, &'a str>;
+
+fn edit_distance(query: &str, text: &str) -> Option<usize> {
+    if query.len() > text.len() {
+        return None;
+    }
+
+    let query = query.as_bytes();
+    let text = text.as_bytes();
+
+    text.windows(query.len())
+        .filter(|&window| window.starts_with(&query[..1]))
+        .map(|window| get_distance(query, window))
+        .min()
+}
+
+fn get_distance(a: &[u8], b: &[u8]) -> usize {
+    a.iter()
+        .copied()
+        .zip(b.iter().copied())
+        .filter(|(a, b)| a != b)
+        .count()
+}
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
@@ -60,12 +82,23 @@ impl fmt::Display for Entity {
 }
 
 #[derive(Clone, Debug, Parser)]
+#[clap(subcommand_negates_reqs(true))]
 struct Args {
-    book: Book,
+    #[clap(required = true)]
+    book: Option<Book>,
     location: Option<Location>,
 
     #[clap(flatten)]
     translation: Translations,
+
+    #[clap(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum Command {
+    #[clap(alias = "s")]
+    Search { query: String },
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -108,9 +141,7 @@ impl FromStr for Location {
         // Romans.3:23
         // john.3:16 -- see also Austin.3:16
 
-        let (chapter, verse) = s
-            .split_once(':')
-            .unwrap_or((s, ""));
+        let (chapter, verse) = s.split_once(':').unwrap_or((s, ""));
 
         // For right now, we're not going to check the book's name, because... well, whatever. We
         // are gonna implement that later.
@@ -138,9 +169,6 @@ impl FromStr for Location {
 
 #[derive(Clone, Debug, thiserror::Error)]
 enum ParseVerseError {
-    #[error("bad verse format: {0}")]
-    Format(String),
-
     #[error("unknown book: {0}")]
     Book(String),
 
@@ -166,10 +194,6 @@ trait AbbrevStr: AsRef<str> + Into<String> {
 impl<T: AsRef<str> + Into<String>> AbbrevStr for T {}
 
 impl ParseVerseError {
-    fn format(s: impl AbbrevStr) -> Self {
-        ParseVerseError::Format(s.get(30))
-    }
-
     fn book(text: impl AbbrevStr) -> Self {
         ParseVerseError::Book(text.get(20))
     }
@@ -605,21 +629,60 @@ fn run(args: &Args) -> Result<()> {
         KJV_DAT
     };
 
+    if let Some(command) = &args.command {
+        return dispatch(command, text);
+    }
+
+    let book = args.book.expect("unreachable");
     let index = build_index(text);
-    let book_index = index.get(&args.book).ok_or_else(|| {
-        Error::NotFound(NotFound {
-            entity: Entity::Book,
-            book: args.book,
-            location: None,
-        })
-    })?;
+    let book_index = index.get(&book).ok_or(Error::NotFound(NotFound {
+        entity: Entity::Book,
+        book,
+        location: None,
+    }))?;
 
     match args.location {
-        Some(location) => load_and_print(args.book, location, book_index)?,
-        None => print_book(args.book, book_index),
+        Some(location) => load_and_print(book, location, book_index)?,
+        None => print_book(book, book_index),
     }
 
     Ok(())
+}
+
+fn dispatch(command: &Command, text: &str) -> Result<()> {
+    match command {
+        // It is not obvious to me that a search should be performed against a given translation
+        // rather than all translations, but we can revisit this later.
+        Command::Search { query } => search(query, text),
+    }
+    Ok(())
+}
+
+fn search(query: &str, text: &str) {
+    let query = query.to_ascii_uppercase();
+    let mut text_by_distance: Vec<_> = text
+        .lines()
+        .filter_map(|line| {
+            edit_distance(&query, &line[9..].to_ascii_uppercase()).map(|distance| (distance, line))
+        })
+        .collect();
+
+    text_by_distance.sort_by_key(|x| x.0);
+
+    let candidates = text_by_distance.into_iter().map(|(_, text)| text).take(10);
+    format_candidates(candidates);
+}
+
+fn format_candidates<'a>(candidates: impl IntoIterator<Item = &'a str>) {
+    // These candidates are the raw content of the dat file, meaning that each one includes a
+    // unique identifier which may be decomposed into book, chapter, verse, etc.
+    for candidate in candidates {
+        let book = Book::from_u8(candidate[..2].parse().unwrap());
+        let chapter: u16 = candidate[2..5].parse().unwrap();
+        let verse: u16 = candidate[5..8].parse().unwrap();
+        let text = &candidate[9..];
+        println!("{book} [{chapter}:{verse}] {text}");
+    }
 }
 
 fn print_book(book: Book, index: &BookIndex) {
@@ -638,22 +701,20 @@ fn print_chapter(index: &ChapterIndex) {
 }
 
 fn load_and_print(book: Book, location: Location, index: &BookIndex) -> Result<()> {
-    let chapter_index = index.get(&location.chapter).ok_or_else(|| {
-        Error::NotFound(NotFound {
+    let chapter_index = index
+        .get(&location.chapter)
+        .ok_or(Error::NotFound(NotFound {
             entity: Entity::Chapter,
             book,
             location: Some(location),
-        })
-    })?;
+        }))?;
 
     if let Some(verse) = location.verse {
-        let &verse = chapter_index.get(&verse).ok_or_else(|| {
-            Error::NotFound(NotFound {
-                entity: Entity::Verse,
-                book,
-                location: Some(location),
-            })
-        })?;
+        let &verse = chapter_index.get(&verse).ok_or(Error::NotFound(NotFound {
+            entity: Entity::Verse,
+            book,
+            location: Some(location),
+        }))?;
         println!("{book}\n{location} {verse}");
     } else {
         let chapter = location.chapter;
