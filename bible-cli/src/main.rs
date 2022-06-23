@@ -1,32 +1,99 @@
 use std::{
-    fmt, io,
+    fmt,
     num::{NonZeroU8, ParseIntError},
     str::FromStr,
 };
 
 use clap::Parser;
 use indexmap::IndexMap;
-use serde::Deserialize;
+
+static ASV_DAT: &str = include_str!("../../resource/asv.dat");
+static KJV_DAT: &str = include_str!("../../resource/kjv.dat");
+
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+type Index<'a> = IndexMap<Book, BookIndex<'a>>;
+
+type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
+
+type ChapterIndex<'a> = IndexMap<u16, &'a str>;
+
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error(transparent)]
+    NotFound(NotFound),
+}
+
+#[derive(Debug, thiserror::Error)]
+struct NotFound {
+    entity: Entity,
+    book: Book,
+    location: Option<Location>,
+}
+
+impl fmt::Display for NotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let entity = self.entity;
+        let book = self.book;
+        match self.location {
+            Some(location) => write!(f, "{entity} not found: {book} {location}"),
+            None => write!(f, "{entity} not found: {book}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Entity {
+    Book,
+    Chapter,
+    Verse,
+}
+
+impl fmt::Display for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Entity::Book => f.write_str("book"),
+            Entity::Chapter => f.write_str("chapter"),
+            Entity::Verse => f.write_str("verse"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Parser)]
 struct Args {
-    location: Location,
+    book: Book,
+    location: Option<Location>,
+
+    #[clap(flatten)]
+    translation: Translations,
+}
+
+#[derive(Clone, Debug, Parser)]
+#[clap(group(clap::ArgGroup::new("translation").required(false)))]
+struct Translations {
+    /// King James Version
+    #[clap(long, group = "translation")]
+    kjv: bool,
+
+    /// American Standard Version
+    #[clap(long, group = "translation")]
+    asv: bool,
 }
 
 /// A full designator of book, chapter, and verse.
 #[derive(Clone, Copy, Debug)]
 struct Location {
-    book: Book,
-    chapter: u8,
-    verse: u16,
+    chapter: u16,
+    verse: Option<u16>,
 }
 
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let book = &self.book;
         let chapter = self.chapter;
-        let verse = self.verse;
-        write!(f, "{book} [{chapter}:{verse}]")
+        match self.verse {
+            Some(verse) => write!(f, "[{chapter}:{verse}]"),
+            None => write!(f, "[{chapter}]"),
+        }
     }
 }
 
@@ -41,31 +108,31 @@ impl FromStr for Location {
         // Romans.3:23
         // john.3:16 -- see also Austin.3:16
 
-        let (book, chapter, verse) = s
-            .split_once('.')
-            .and_then(|(book, chapter_verse)| {
-                chapter_verse
-                    .split_once(':')
-                    .map(|(chapter, verse)| (book, chapter, verse))
-            })
-            .ok_or_else(|| ParseVerseError::format(s))?;
+        let (chapter, verse) = s
+            .split_once(':')
+            .unwrap_or((s, ""));
 
         // For right now, we're not going to check the book's name, because... well, whatever. We
         // are gonna implement that later.
 
-        if book == "2 Opinions" {
-            return Err(ParseVerseError::book(book));
-        }
+        let chapter = chapter
+            .parse()
+            .map_err(|e| ParseVerseError::chapter(chapter, e))?;
 
-        Ok(Location {
-            book: book.parse()?,
-            chapter: chapter
+        if verse.is_empty() {
+            Ok(Location {
+                chapter,
+                verse: None,
+            })
+        } else {
+            let verse: u16 = verse
                 .parse()
-                .map_err(|e| ParseVerseError::chapter(chapter, e))?,
-            verse: verse
-                .parse()
-                .map_err(|e| ParseVerseError::verse(verse, e))?,
-        })
+                .map_err(|e| ParseVerseError::verse(verse, e))?;
+            Ok(Location {
+                chapter,
+                verse: Some(verse),
+            })
+        }
     }
 }
 
@@ -125,7 +192,9 @@ impl ParseVerseError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 enum Book {
-    Genesis,        // Genesis
+    // Fun fact: setting Genesis as 1 causes this enum to be 1-based, which I am hoping will
+    // enable the optimization where the None variant will simply appear as zero.
+    Genesis = 1,    // Genesis
     Exodus,         // Exodus
     Leviticus,      // Leviticus
     Numbers,        // Numbers
@@ -195,81 +264,76 @@ enum Book {
 
 impl Book {
     const fn from_u8(u: u8) -> Self {
-        match u - 1 {
-            0 => Book::Genesis,
-            1 => Book::Exodus,
-            2 => Book::Leviticus,
-            3 => Book::Numbers,
-            4 => Book::Deuteronomy,
-            5 => Book::Joshua,
-            6 => Book::Judges,
-            7 => Book::Ruth,
-            8 => Book::Samuel1,
-            9 => Book::Samuel2,
-            10 => Book::Kings1,
-            11 => Book::Kings2,
-            12 => Book::Chronicles1,
-            13 => Book::Chronicles2,
-            14 => Book::Ezra,
-            15 => Book::Nehemiah,
-            16 => Book::Esther,
-            17 => Book::Job,
-            18 => Book::Psalms,
-            19 => Book::Proverbs,
-            20 => Book::Ecclesiastes,
-            21 => Book::SongofSongs,
-            22 => Book::Isaiah,
-            23 => Book::Jeremiah,
-            24 => Book::Lamentations,
-            25 => Book::Ezekiel,
-            26 => Book::Daniel,
-            27 => Book::Hosea,
-            28 => Book::Joel,
-            29 => Book::Amos,
-            30 => Book::Obadiah,
-            31 => Book::Jonah,
-            32 => Book::Micah,
-            33 => Book::Nahum,
-            34 => Book::Habakkuk,
-            35 => Book::Zephaniah,
-            36 => Book::Haggai,
-            37 => Book::Zechariah,
-            38 => Book::Malachi,
-            39 => Book::Matthew,
-            40 => Book::Mark,
-            41 => Book::Luke,
-            42 => Book::John,
-            43 => Book::Acts,
-            44 => Book::Romans,
-            45 => Book::Corinthians1,
-            46 => Book::Corinthians2,
-            47 => Book::Galatians,
-            48 => Book::Ephesians,
-            49 => Book::Philippians,
-            50 => Book::Colossians,
-            51 => Book::Thessalonians1,
-            52 => Book::Thessalonians2,
-            53 => Book::Timothy1,
-            54 => Book::Timothy2,
-            55 => Book::Titus,
-            56 => Book::Philemon,
-            57 => Book::Hebrews,
-            58 => Book::James,
-            59 => Book::Peter1,
-            60 => Book::Peter2,
-            61 => Book::John1,
-            62 => Book::John2,
-            63 => Book::John3,
-            64 => Book::Jude,
-            65 => Book::Revelation,
+        match u {
+            1 => Book::Genesis,
+            2 => Book::Exodus,
+            3 => Book::Leviticus,
+            4 => Book::Numbers,
+            5 => Book::Deuteronomy,
+            6 => Book::Joshua,
+            7 => Book::Judges,
+            8 => Book::Ruth,
+            9 => Book::Samuel1,
+            10 => Book::Samuel2,
+            11 => Book::Kings1,
+            12 => Book::Kings2,
+            13 => Book::Chronicles1,
+            14 => Book::Chronicles2,
+            15 => Book::Ezra,
+            16 => Book::Nehemiah,
+            17 => Book::Esther,
+            18 => Book::Job,
+            19 => Book::Psalms,
+            20 => Book::Proverbs,
+            21 => Book::Ecclesiastes,
+            22 => Book::SongofSongs,
+            23 => Book::Isaiah,
+            24 => Book::Jeremiah,
+            25 => Book::Lamentations,
+            26 => Book::Ezekiel,
+            27 => Book::Daniel,
+            28 => Book::Hosea,
+            29 => Book::Joel,
+            30 => Book::Amos,
+            31 => Book::Obadiah,
+            32 => Book::Jonah,
+            33 => Book::Micah,
+            34 => Book::Nahum,
+            35 => Book::Habakkuk,
+            36 => Book::Zephaniah,
+            37 => Book::Haggai,
+            38 => Book::Zechariah,
+            39 => Book::Malachi,
+            40 => Book::Matthew,
+            41 => Book::Mark,
+            42 => Book::Luke,
+            43 => Book::John,
+            44 => Book::Acts,
+            45 => Book::Romans,
+            46 => Book::Corinthians1,
+            47 => Book::Corinthians2,
+            48 => Book::Galatians,
+            49 => Book::Ephesians,
+            50 => Book::Philippians,
+            51 => Book::Colossians,
+            52 => Book::Thessalonians1,
+            53 => Book::Thessalonians2,
+            54 => Book::Timothy1,
+            55 => Book::Timothy2,
+            56 => Book::Titus,
+            57 => Book::Philemon,
+            58 => Book::Hebrews,
+            59 => Book::James,
+            60 => Book::Peter1,
+            61 => Book::Peter2,
+            62 => Book::John1,
+            63 => Book::John2,
+            64 => Book::John3,
+            65 => Book::Jude,
+            66 => Book::Revelation,
 
             _ => panic!("invalid conversion"),
         }
-    }
-
-    // No idea what I did this for.
-    const fn number(self) -> u8 {
-        self as u8 + 1
     }
 
     const fn name(self) -> &'static str {
@@ -347,6 +411,12 @@ impl Book {
 impl fmt::Display for Book {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+impl From<u8> for Book {
+    fn from(u: u8) -> Self {
+        Book::from_u8(u)
     }
 }
 
@@ -528,108 +598,89 @@ fn main() {
     }
 }
 
-fn run(args: &Args) -> io::Result<()> {
-    #[derive(Debug, Deserialize)]
-    pub struct Packet {
-        resultset: Resultset,
-    }
+fn run(args: &Args) -> Result<()> {
+    let text = if args.translation.asv {
+        ASV_DAT
+    } else {
+        KJV_DAT
+    };
 
-    #[derive(Debug, Deserialize)]
-    pub struct Resultset {
-        row: Vec<Row>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    pub struct Row {
-        field: Vec<Field>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(untagged)]
-    pub enum Field {
-        Integer(i64),
-        String(String),
-    }
-
-    macro_rules! into_integer {
-        ($i:ty) => {
-            impl From<Field> for $i {
-                fn from(field: Field) -> Self {
-                    match field {
-                        Field::Integer(i) => i as $i,
-                        Field::String(_) => panic!("invalid conversion"),
-                    }
-                }
-            }
-        };
-    }
-
-    into_integer!(u8);
-    into_integer!(u16);
-
-    impl From<Field> for String {
-        fn from(field: Field) -> Self {
-            match field {
-                Field::Integer(_) => panic!("invalid conversion"),
-                Field::String(s) => s,
-            }
-        }
-    }
-
-    let data = include_str!("../../resource/kjv.json");
-    let packet: Packet = serde_json::from_str(data).unwrap();
-
-    let Resultset { row } = packet.resultset;
-    let verses: Vec<Verse> = row
-        .into_iter()
-        .map(|mut field| {
-            let mut columns = field.field.drain(1..);
-            Verse {
-                book: Book::from_u8(columns.next().unwrap().into()),
-                chapter: columns.next().unwrap().into(),
-                verse: columns.next().unwrap().into(),
-                text: columns.next().unwrap().into(),
-            }
+    let index = build_index(text);
+    let book_index = index.get(&args.book).ok_or_else(|| {
+        Error::NotFound(NotFound {
+            entity: Entity::Book,
+            book: args.book,
+            location: None,
         })
-        .collect();
+    })?;
 
-    let index = build_index(&verses);
-    let location = args.location;
-    let text = load(&index, location)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "verse not found"))?;
-
-    println!("{location} {text}");
+    match args.location {
+        Some(location) => load_and_print(args.book, location, book_index)?,
+        None => print_book(args.book, book_index),
+    }
 
     Ok(())
 }
 
-type Index<'a> = IndexMap<Book, IndexMap<u8, IndexMap<u16, &'a str>>>;
-
-struct Verse {
-    book: Book,
-    chapter: u8,
-    verse: u16,
-    text: String,
-}
-
-fn load<'a>(index: &Index<'a>, location: Location) -> Option<&'a str> {
-    index
-        .get(&location.book)?
-        .get(&location.chapter)?
-        .get(&location.verse)
-        .copied()
-}
-
-fn build_index(verses: &[Verse]) -> Index {
-    let mut index: Index = IndexMap::new();
-    for verse in verses {
-        index
-            .entry(verse.book)
-            .or_default()
-            .entry(verse.chapter)
-            .or_default()
-            .insert(verse.verse, &verse.text);
+fn print_book(book: Book, index: &BookIndex) {
+    for (chapter, chapter_index) in index {
+        println!("{book} {chapter}:");
+        print_chapter(chapter_index);
     }
+}
+
+fn print_chapter(index: &ChapterIndex) {
+    println!();
+    for (&verse, &text) in index {
+        println!("{verse} {text}");
+    }
+    println!();
+}
+
+fn load_and_print(book: Book, location: Location, index: &BookIndex) -> Result<()> {
+    let chapter_index = index.get(&location.chapter).ok_or_else(|| {
+        Error::NotFound(NotFound {
+            entity: Entity::Chapter,
+            book,
+            location: Some(location),
+        })
+    })?;
+
+    if let Some(verse) = location.verse {
+        let &verse = chapter_index.get(&verse).ok_or_else(|| {
+            Error::NotFound(NotFound {
+                entity: Entity::Verse,
+                book,
+                location: Some(location),
+            })
+        })?;
+        println!("{book}\n{location} {verse}");
+    } else {
+        let chapter = location.chapter;
+        println!("{book} {chapter}:");
+        print_chapter(chapter_index);
+    }
+
+    Ok(())
+}
+
+fn build_index(text: &str) -> Index {
+    let mut index: Index = IndexMap::new();
+
+    for record in text.lines() {
+        let book = Book::from_u8(record[..2].parse().unwrap());
+        let chapter: u16 = record[2..5].parse().unwrap();
+        let verse: u16 = record[5..8].parse().unwrap();
+        let text = &record[9..];
+
+        index
+            .entry(book)
+            .or_default()
+            .entry(chapter)
+            .or_default()
+            .insert(verse, text);
+    }
+
     index
 }
 
