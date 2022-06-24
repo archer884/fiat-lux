@@ -14,11 +14,8 @@ static ASV_DAT: &str = include_str!("../resource/asv.dat");
 static KJV_DAT: &str = include_str!("../resource/kjv.dat");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
 type Index<'a> = IndexMap<Book, BookIndex<'a>>;
-
 type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
-
 type ChapterIndex<'a> = IndexMap<u16, &'a str>;
 
 #[derive(Clone, Debug, Parser)]
@@ -38,7 +35,14 @@ struct Args {
 #[derive(Clone, Debug, Subcommand)]
 enum Command {
     #[clap(alias = "s")]
-    Search { query: String },
+    Search(SearchArgs),
+}
+
+#[derive(Clone, Debug, Parser)]
+struct SearchArgs {
+    query: String,
+    #[clap(short, long)]
+    limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -93,14 +97,14 @@ fn dispatch(command: &Command, text: &str) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search { query } => search(query, text),
+        Command::Search(args) => search(args, text),
     }
     Ok(())
 }
 
-fn search(query: &str, text: &str) {
+fn search(args: &SearchArgs, text: &str) {
     let splitter = SplitWindows::new();
-    let query = query.to_ascii_uppercase();
+    let query = args.query.to_ascii_uppercase();
 
     let mut text_by_distance: Vec<_> = text
         .lines()
@@ -112,7 +116,7 @@ fn search(query: &str, text: &str) {
 
     text_by_distance.sort_by_key(|x| x.0);
 
-    let candidates = text_by_distance.into_iter().map(|(_, text)| text).take(10);
+    let candidates = text_by_distance.into_iter().map(|(_, text)| text).take(args.limit.unwrap_or(10));
     format_candidates(candidates);
 }
 
