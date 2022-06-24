@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, io};
 
 use crate::{book::Book, location::Location};
 
@@ -20,6 +20,21 @@ impl<T: AsRef<str> + Into<String>> AbbrevStr for T {}
 pub enum Error {
     #[error(transparent)]
     NotFound(NotFound),
+
+    #[error(transparent)]
+    IO(#[from] io::Error),
+
+    #[error(transparent)]
+    Tantivy(#[from] tantivy::error::TantivyError),
+
+    #[error(transparent)]
+    TantivyDir(#[from] tantivy::directory::error::OpenDirectoryError),
+
+    #[error(transparent)]
+    TantivyRead(#[from] tantivy::directory::error::OpenReadError),
+
+    #[error(transparent)]
+    TantivyQuery(#[from] tantivy::query::QueryParserError),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1,20 +1,25 @@
 mod book;
 mod error;
 mod location;
-mod search;
+
+use std::io;
 
 use book::Book;
 use clap::{Parser, Subcommand};
-use error::{Error, NotFound, Entity};
+use directories::ProjectDirs;
+use error::{Entity, Error, NotFound};
 use indexmap::IndexMap;
 use location::Location;
-use search::SplitWindows;
+use tantivy::{
+    collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::Schema, Index,
+    IndexWriter, ReloadPolicy,
+};
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
 static KJV_DAT: &str = include_str!("../resource/kjv.dat");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-type Index<'a> = IndexMap<Book, BookIndex<'a>>;
+type FullIndex<'a> = IndexMap<Book, BookIndex<'a>>;
 type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
 type ChapterIndex<'a> = IndexMap<u16, &'a str>;
 
@@ -74,7 +79,7 @@ fn run(args: &Args) -> Result<()> {
     };
 
     if let Some(command) = &args.command {
-        return dispatch(command, text);
+        return dispatch(command);
     }
 
     let book = args.book.expect("unreachable");
@@ -93,43 +98,141 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(command: &Command, text: &str) -> Result<()> {
+fn dispatch(command: &Command) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search(args) => search(args, text),
+        Command::Search(args) => search(args),
     }
+}
+
+fn search(args: &SearchArgs) -> Result<()> {
+    // We want to store our data someplace sane, so we're gonna use the directories library to
+    // decide where all this data goes.
+
+    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "unable to initialize project directory",
+        )
+    })?;
+
+    // Well need to ensure the directory exists. That's easy, but I'm not sure how to know if
+    // there is an existing index in an existing directory. That seems important.
+
+    let index_path = dirs.data_dir().join("bible_idx");
+    if !index_path.exists() {
+        std::fs::create_dir_all(&index_path)?;
+    }
+
+    // Looks like there's a function for that, but let's comment this out for now and just go in-memory....
+
+    let schema = build_schema();
+    let translation = schema.get_field("translation").unwrap();
+    let location = schema.get_field("location").unwrap();
+    let content = schema.get_field("content").unwrap();
+
+    let index_dir = MmapDirectory::open(&index_path)?;
+    let index = if !tantivy::Index::exists(&index_dir)? {
+        let index = Index::create_in_dir(index_path, schema.clone())?;
+        write_index(&schema, &mut index.writer(0x3200000)?)?; // 50 megabytes of memory
+        index
+    } else {
+        tantivy::Index::open(index_dir)?
+    };
+
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::OnCommit)
+        .try_into()?;
+    let searcher = reader.searcher();
+    let query_parser = QueryParser::for_index(&index, vec![content]);
+    let query = query_parser.parse_query(&args.query)?;
+    let candidates = searcher.search(&query, &TopDocs::with_limit(args.limit.unwrap_or(10)))?;
+
+    for (_score, address) in candidates {
+        let retrieved = searcher.doc(address)?;
+        let translation = retrieved.get_first(translation).unwrap().as_text().unwrap();
+        let location = retrieved.get_first(location).unwrap().as_u64().unwrap();
+        let content = retrieved.get_first(content).unwrap().as_text().unwrap();
+
+        let (book, location) = decompose_id(location);
+
+        println!("{translation} {book} {location}\n{content}");
+    }
+
     Ok(())
 }
 
-fn search(args: &SearchArgs, text: &str) {
-    let splitter = SplitWindows::new();
-    let query = args.query.to_ascii_uppercase();
+fn decompose_id(id: u64) -> (Book, Location) {
+    // Just the one or two most significant digits matter for the book id.
+    // 01001001
 
-    let mut text_by_distance: Vec<_> = text
-        .lines()
-        .filter_map(|line| {
-            edit_distance(&query, &line[9..].to_ascii_uppercase(), &splitter)
-                .map(|distance| (distance, line))
-        })
-        .collect();
+    let chapter = (id % 1_000_000 / 1000) as u16;
+    let verse = (id % 1000) as u16;
 
-    text_by_distance.sort_by_key(|x| x.0);
-
-    let candidates = text_by_distance.into_iter().map(|(_, text)| text).take(args.limit.unwrap_or(10));
-    format_candidates(candidates);
+    (
+        ((id / 1_000_000) as u8).into(),
+        Location {
+            chapter,
+            verse: Some(verse),
+        },
+    )
 }
 
-fn format_candidates<'a>(candidates: impl IntoIterator<Item = &'a str>) {
-    // These candidates are the raw content of the dat file, meaning that each one includes a
-    // unique identifier which may be decomposed into book, chapter, verse, etc.
-    for candidate in candidates {
-        let book = Book::from_u8(candidate[..2].parse().unwrap());
-        let chapter: u16 = candidate[2..5].parse().unwrap();
-        let verse: u16 = candidate[5..8].parse().unwrap();
-        let text = &candidate[9..];
-        println!("{book} [{chapter}:{verse}] {text}");
+fn write_index(schema: &Schema, writer: &mut IndexWriter) -> tantivy::Result<()> {
+    use tantivy::doc;
+
+    let translation = schema.get_field("translation").unwrap();
+    let location = schema.get_field("location").unwrap();
+    let content = schema.get_field("content").unwrap();
+
+    // let mut count = 0;
+
+    for (id, text) in parse_verses_with_id(ASV_DAT) {
+        writer.add_document(doc!(
+            translation => "ASV",
+            location => id,
+            content => text,
+        ))?;
+
+        // count += 1;
+        // if count == 1000 {
+        //     writer.commit()?;
+        //     count = 0;
+        // }
     }
+
+    for (id, text) in parse_verses_with_id(KJV_DAT) {
+        writer.add_document(doc!(
+            translation => "KJV",
+            location => id,
+            content => text,
+        ))?;
+        
+        // count += 1;
+        // if count == 1000 {
+        //     writer.commit()?;
+        //     count = 0;
+        // }
+    }
+    
+    writer.commit()?;
+    Ok(())
+}
+
+fn build_schema() -> Schema {
+    use tantivy::schema;
+    let mut builder = Schema::builder();
+    builder.add_text_field("translation", schema::STORED);
+    builder.add_u64_field("location", schema::STORED);
+    builder.add_text_field("content", schema::TEXT | schema::STORED);
+    builder.build()
+}
+
+fn parse_verses_with_id(text: &str) -> impl Iterator<Item = (u64, &str)> {
+    text.lines()
+        .filter_map(|line| line[..8].parse::<u64>().ok().map(|id| (id, &line[9..])))
 }
 
 fn print_book(book: Book, index: &BookIndex) {
@@ -172,8 +275,8 @@ fn load_and_print(book: Book, location: Location, index: &BookIndex) -> Result<(
     Ok(())
 }
 
-fn build_index(text: &str) -> Index {
-    let mut index: Index = IndexMap::new();
+fn build_index(text: &str) -> FullIndex {
+    let mut index: FullIndex = IndexMap::new();
 
     for record in text.lines() {
         let book = Book::from_u8(record[..2].parse().unwrap());
@@ -190,32 +293,4 @@ fn build_index(text: &str) -> Index {
     }
 
     index
-}
-
-fn edit_distance(query: &str, text: &str, splitter: &SplitWindows) -> Option<usize> {
-    if query.len() > text.len() {
-        return None;
-    }
-
-    let query = query.as_bytes();
-    let windows = splitter.windows(text, query.len());
-
-    windows
-        .filter_map(|window| {
-            let window = window.as_bytes();
-            if window[0] == query[0] {
-                Some(get_distance(query, window))
-            } else {
-                None
-            }
-        })
-        .min()
-}
-
-fn get_distance(a: &[u8], b: &[u8]) -> usize {
-    a.iter()
-        .copied()
-        .zip(b.iter().copied())
-        .filter(|(a, b)| a != b)
-        .count()
 }
