@@ -13,17 +13,6 @@ pub struct Location {
 }
 
 impl Location {
-    pub fn from_path(path: &str) -> Self {
-        let path = path.trim_start_matches('/');
-        let mut segments = path.split('/');
-
-        Self {
-            book: segments.next().unwrap().parse::<u8>().unwrap().into(),
-            chapter: segments.next().unwrap().parse().unwrap(),
-            verse: segments.next().unwrap().parse().unwrap(),
-        }
-    }
-
     pub fn from_id<T: Into<u64>>(id: T) -> Self {
         let id = id.into();
         Self {

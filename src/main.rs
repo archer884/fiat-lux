@@ -12,7 +12,7 @@ use std::{
 
 use book::Book;
 use clap::{Parser, Subcommand};
-use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table, TableComponent};
+use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
@@ -133,7 +133,7 @@ impl ParseTranslationError {
 
 #[derive(Clone, Debug)]
 struct Text {
-    translation: Translation,
+    // translation: Translation,
     book: Book,
     chapter: u16,
     verse: u16,
@@ -142,13 +142,13 @@ struct Text {
 
 impl Text {
     fn from_document(document: Document, fields: &SearchFields) -> Self {
-        let translation = document
-            .get_first(fields.translation)
-            .unwrap()
-            .as_facet()
-            .unwrap()
-            .to_string();
-        let translation: Translation = translation.trim_start_matches('/').parse().unwrap();
+        // let translation = document
+        //     .get_first(fields.translation)
+        //     .unwrap()
+        //     .as_facet()
+        //     .unwrap()
+        //     .to_string();
+        // let translation: Translation = translation.trim_start_matches('/').parse().unwrap();
 
         let location = document
             .get_first(fields.location)
@@ -174,7 +174,7 @@ impl Text {
             chapter,
             verse,
             content,
-            translation,
+            // translation,
         }
     }
 }
@@ -246,11 +246,11 @@ fn run(args: &Args) -> Result<()> {
 
     if texts.len() == 1 {
         let Text {
-            translation,
             book,
             chapter,
             verse,
             content,
+            ..
         } = texts.into_iter().next().unwrap();
         println!("{book} {chapter}:{verse}\n{content}");
     } else {
