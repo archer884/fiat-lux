@@ -2,14 +2,20 @@ mod book;
 mod error;
 mod location;
 
+use std::io;
+
 use book::Book;
 use clap::{Parser, Subcommand};
+use directories::ProjectDirs;
 use error::{Entity, Error, NotFound};
 use indexmap::IndexMap;
 use location::Location;
 use tantivy::{
-    collector::TopDocs, query::QueryParser, schema::Schema, Index,
-    IndexWriter, ReloadPolicy,
+    collector::TopDocs,
+    directory::MmapDirectory,
+    query::{BooleanQuery, QueryParser, TermQuery},
+    schema::{Facet, FacetOptions, IndexRecordOption, Schema},
+    Index, IndexWriter, ReloadPolicy, Term,
 };
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
@@ -69,15 +75,15 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<()> {
+    if let Some(command) = &args.command {
+        return dispatch(command, &args.translation);
+    }
+
     let text = if args.translation.asv {
         ASV_DAT
     } else {
         KJV_DAT
     };
-
-    if let Some(command) = &args.command {
-        return dispatch(command, text);
-    }
 
     let book = args.book.expect("unreachable");
     let index = build_index(text);
@@ -95,35 +101,84 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(command: &Command, text: &str) -> Result<()> {
+fn dispatch(command: &Command, translation: &Translations) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search(args) => search(args, text),
+        Command::Search(args) => search(args, translation),
     }
 }
 
-fn search(args: &SearchArgs, text: &str) -> Result<()> {
-    let schema = build_schema();
-    let location = schema.get_field("location").unwrap();
-    let content = schema.get_field("content").unwrap();
+fn search(args: &SearchArgs, translation: &Translations) -> Result<()> {
+    // We want to store our data someplace sane, so we're gonna use the directories library to
+    // decide where all this data goes.
 
-    let index = Index::create_in_ram(schema.clone());
-    write_index(text, &schema, &mut index.writer(0x3200000)?)?;
+    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "unable to initialize project directory",
+        )
+    })?;
+
+    // Well need to ensure the directory exists. That's easy, but I'm not sure how to know if
+    // there is an existing index in an existing directory. That seems important.
+
+    let index_path = dirs.data_dir().join("bible_idx");
+    if !index_path.exists() {
+        std::fs::create_dir_all(&index_path)?;
+    }
+
+    let schema = build_schema();
+    let translation_f = schema.get_field("translation").unwrap();
+    let location_f = schema.get_field("location").unwrap();
+    let content_f = schema.get_field("content").unwrap();
+
+    let index_dir = MmapDirectory::open(&index_path)?;
+    let index = if !tantivy::Index::exists(&index_dir)? {
+        let index = Index::create_in_dir(index_path, schema.clone())?;
+        // Index using 50 megabytes of memory
+        write_index("kjv", KJV_DAT, &schema, &mut index.writer(0x3200000)?)?;
+        write_index("asv", ASV_DAT, &schema, &mut index.writer(0x3200000)?)?;
+        index
+    } else {
+        tantivy::Index::open(index_dir)?
+    };
 
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::OnCommit)
         .try_into()?;
     let searcher = reader.searcher();
-    let query_parser = QueryParser::for_index(&index, vec![content]);
+
+    // This query parser constructs a query from the user's search string. We can break the search
+    // string into multiple strings at some point to make the cli less annoying, maybe? But for now
+    // the user provides a monolithic string.
+    let query_parser = QueryParser::for_index(&index, vec![content_f]);
     let query = query_parser.parse_query(&args.query)?;
-    let candidates = searcher.search(&query, &TopDocs::with_limit(args.limit.unwrap_or(10)))?;
+
+    // That gives us one search term. We need to make a second term for the facet referencing the
+    // correct translation.
+
+    let translation_facet = if translation.asv {
+        Facet::from("/translation/asv")
+    } else {
+        Facet::from("/translation/kjv")
+    };
+    let translation_term = Term::from_facet(translation_f, &translation_facet);
+    let term_query = TermQuery::new(translation_term, IndexRecordOption::Basic);
+
+    // Damned if I know the correct way to do this, but this seems to work, so....
+
+    let combined_query = BooleanQuery::intersection(vec![query, Box::new(term_query)]);
+    let candidates = searcher.search(
+        &combined_query,
+        &TopDocs::with_limit(args.limit.unwrap_or(10)),
+    )?;
 
     for (_score, address) in candidates {
         let retrieved = searcher.doc(address)?;
-        let location = retrieved.get_first(location).unwrap().as_u64().unwrap();
-        let content = retrieved.get_first(content).unwrap().as_text().unwrap();
+        let location = retrieved.get_first(location_f).unwrap().as_u64().unwrap();
+        let content = retrieved.get_first(content_f).unwrap().as_text().unwrap();
 
         let (book, location) = decompose_id(location);
 
@@ -149,19 +204,27 @@ fn decompose_id(id: u64) -> (Book, Location) {
     )
 }
 
-fn write_index(text: &str, schema: &Schema, writer: &mut IndexWriter) -> tantivy::Result<()> {
+fn write_index(
+    translation_id: &str,
+    text: &str,
+    schema: &Schema,
+    writer: &mut IndexWriter,
+) -> tantivy::Result<()> {
     use tantivy::doc;
 
+    let translation_facet = format!("/translation/{translation_id}");
+    let translation = schema.get_field("translation").unwrap();
     let location = schema.get_field("location").unwrap();
     let content = schema.get_field("content").unwrap();
 
     for (id, text) in parse_verses_with_id(text) {
         writer.add_document(doc!(
+            translation => Facet::from(&translation_facet),
             location => id,
             content => text,
         ))?;
     }
-    
+
     writer.commit()?;
     Ok(())
 }
@@ -169,6 +232,7 @@ fn write_index(text: &str, schema: &Schema, writer: &mut IndexWriter) -> tantivy
 fn build_schema() -> Schema {
     use tantivy::schema;
     let mut builder = Schema::builder();
+    builder.add_facet_field("translation", FacetOptions::default());
     builder.add_u64_field("location", schema::STORED);
     builder.add_text_field("content", schema::TEXT | schema::STORED);
     builder.build()
