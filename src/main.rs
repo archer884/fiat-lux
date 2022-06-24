@@ -3,6 +3,7 @@ mod error;
 mod location;
 
 use std::{
+    borrow::Cow,
     cmp::{Ord, Ordering},
     fmt::{self, Write},
     io,
@@ -11,6 +12,7 @@ use std::{
 
 use book::Book;
 use clap::{Parser, Subcommand};
+use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table, TableComponent};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
@@ -243,18 +245,71 @@ fn run(args: &Args) -> Result<()> {
         args.translation.into(),
     )?;
 
-    for text in texts {
+    if texts.len() == 1 {
         let Text {
+            translation,
             book,
             chapter,
             verse,
             content,
-            ..
-        } = text;
+        } = texts.into_iter().next().unwrap();
         println!("{book} {chapter}:{verse}\n{content}");
+    } else {
+        format_texts(texts);
     }
 
     Ok(())
+}
+
+fn format_texts(texts: impl IntoIterator<Item = Text>) {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Chapter {
+        book: Book,
+        chapter: u16,
+    }
+
+    impl Text {
+        fn chapter(&self) -> Chapter {
+            Chapter {
+                book: self.book,
+                chapter: self.chapter,
+            }
+        }
+    }
+
+    let mut current: Option<Chapter> = None;
+    let mut table = Table::new();
+
+    table.set_content_arrangement(ContentArrangement::DynamicFullWidth);
+    table.load_preset(comfy_table::presets::NOTHING);
+    // table.set_style(TableComponent::HorizontalLines, ' ');
+
+    for text in texts {
+        if current.is_none()
+            || !current
+                .map(|chapter| chapter == text.chapter())
+                .unwrap_or_default()
+        {
+            let next = text.chapter();
+            let Chapter { book, chapter } = next;
+            current = Some(next);
+            table.add_row(vec![
+                Cell::new(""),
+                Cell::new(format!("\n{book} {chapter}")).add_attribute(Attribute::Bold),
+            ]);
+        }
+
+        let verse = text.verse;
+        let content = &text.content;
+        table.add_row(&[Cow::from(format!("{verse:4}")), Cow::from(content)]);
+    }
+
+    table
+        .column_mut(0)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Right);
+
+    println!("{table}");
 }
 
 fn search_by_book_and_location(
@@ -336,33 +391,18 @@ fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
     // Damned if I know the correct way to do this, but this seems to work, so....
 
     let combined_query = BooleanQuery::intersection(vec![query, Box::new(term_query)]);
-    let candidates = searcher.search(
-        &combined_query,
-        &TopDocs::with_limit(args.limit.unwrap_or(10)),
-    )?;
+    let mut texts: Vec<_> = searcher
+        .search(
+            &combined_query,
+            &TopDocs::with_limit(args.limit.unwrap_or(10)),
+        )?
+        .into_iter()
+        .filter_map(|(_, address)| searcher.doc(address).ok())
+        .map(|document| Text::from_document(document, &fields))
+        .collect();
 
-    for (_score, address) in candidates {
-        let retrieved = searcher.doc(address)?;
-        let location = retrieved
-            .get_first(fields.location)
-            .unwrap()
-            .as_facet()
-            .unwrap()
-            .to_string();
-        let content = retrieved
-            .get_first(fields.content)
-            .unwrap()
-            .as_text()
-            .unwrap();
-
-        let Location {
-            book,
-            chapter,
-            verse,
-        } = Location::from_path(&location);
-
-        println!("{book} {chapter}:{verse}\n{content}");
-    }
+    texts.sort();
+    format_texts(texts);
 
     Ok(())
 }
