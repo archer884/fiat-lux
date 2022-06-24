@@ -1,221 +1,10 @@
-use std::{
-    fmt,
-    num::{NonZeroU8, ParseIntError},
-    str::FromStr,
-};
+use std::{fmt, num::NonZeroU8, str::FromStr};
 
-use clap::{Parser, Subcommand};
-use indexmap::IndexMap;
-
-static ASV_DAT: &str = include_str!("../../resource/asv.dat");
-static KJV_DAT: &str = include_str!("../../resource/kjv.dat");
-
-type Result<T, E = Error> = std::result::Result<T, E>;
-
-type Index<'a> = IndexMap<Book, BookIndex<'a>>;
-
-type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
-
-type ChapterIndex<'a> = IndexMap<u16, &'a str>;
-
-fn edit_distance(query: &str, text: &str) -> Option<usize> {
-    if query.len() > text.len() {
-        return None;
-    }
-
-    let query = query.as_bytes();
-    let text = text.as_bytes();
-
-    text.windows(query.len())
-        .filter(|&window| window.starts_with(&query[..1]))
-        .map(|window| get_distance(query, window))
-        .min()
-}
-
-fn get_distance(a: &[u8], b: &[u8]) -> usize {
-    a.iter()
-        .copied()
-        .zip(b.iter().copied())
-        .filter(|(a, b)| a != b)
-        .count()
-}
-
-#[derive(Debug, thiserror::Error)]
-enum Error {
-    #[error(transparent)]
-    NotFound(NotFound),
-}
-
-#[derive(Debug, thiserror::Error)]
-struct NotFound {
-    entity: Entity,
-    book: Book,
-    location: Option<Location>,
-}
-
-impl fmt::Display for NotFound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let entity = self.entity;
-        let book = self.book;
-        match self.location {
-            Some(location) => write!(f, "{entity} not found: {book} {location}"),
-            None => write!(f, "{entity} not found: {book}"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Entity {
-    Book,
-    Chapter,
-    Verse,
-}
-
-impl fmt::Display for Entity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Entity::Book => f.write_str("book"),
-            Entity::Chapter => f.write_str("chapter"),
-            Entity::Verse => f.write_str("verse"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Parser)]
-#[clap(subcommand_negates_reqs(true))]
-struct Args {
-    #[clap(required = true)]
-    book: Option<Book>,
-    location: Option<Location>,
-
-    #[clap(flatten)]
-    translation: Translations,
-
-    #[clap(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Clone, Debug, Subcommand)]
-enum Command {
-    #[clap(alias = "s")]
-    Search { query: String },
-}
-
-#[derive(Clone, Debug, Parser)]
-#[clap(group(clap::ArgGroup::new("translation").required(false)))]
-struct Translations {
-    /// King James Version
-    #[clap(long, group = "translation")]
-    kjv: bool,
-
-    /// American Standard Version
-    #[clap(long, group = "translation")]
-    asv: bool,
-}
-
-/// A full designator of book, chapter, and verse.
-#[derive(Clone, Copy, Debug)]
-struct Location {
-    chapter: u16,
-    verse: Option<u16>,
-}
-
-impl fmt::Display for Location {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let chapter = self.chapter;
-        match self.verse {
-            Some(verse) => write!(f, "[{chapter}:{verse}]"),
-            None => write!(f, "[{chapter}]"),
-        }
-    }
-}
-
-impl FromStr for Location {
-    type Err = ParseVerseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // I have just now decided that the way this has to be written is in the following format,
-        // at least until I start to refine the cli...
-
-        // psalms.23
-        // Romans.3:23
-        // john.3:16 -- see also Austin.3:16
-
-        let (chapter, verse) = s.split_once(':').unwrap_or((s, ""));
-
-        // For right now, we're not going to check the book's name, because... well, whatever. We
-        // are gonna implement that later.
-
-        let chapter = chapter
-            .parse()
-            .map_err(|e| ParseVerseError::chapter(chapter, e))?;
-
-        if verse.is_empty() {
-            Ok(Location {
-                chapter,
-                verse: None,
-            })
-        } else {
-            let verse: u16 = verse
-                .parse()
-                .map_err(|e| ParseVerseError::verse(verse, e))?;
-            Ok(Location {
-                chapter,
-                verse: Some(verse),
-            })
-        }
-    }
-}
-
-#[derive(Clone, Debug, thiserror::Error)]
-enum ParseVerseError {
-    #[error("unknown book: {0}")]
-    Book(String),
-
-    #[error("unable to parse chapter: {text}")]
-    Chapter { text: String, cause: ParseIntError },
-
-    #[error("unable to parse verse: {text}")]
-    Verse { text: String, cause: ParseIntError },
-}
-
-trait AbbrevStr: AsRef<str> + Into<String> {
-    fn get(self, limit: usize) -> String {
-        let full = self.as_ref();
-
-        if full.len() > limit {
-            full[..limit].to_string() + "..."
-        } else {
-            self.into()
-        }
-    }
-}
-
-impl<T: AsRef<str> + Into<String>> AbbrevStr for T {}
-
-impl ParseVerseError {
-    fn book(text: impl AbbrevStr) -> Self {
-        ParseVerseError::Book(text.get(20))
-    }
-
-    fn chapter(text: impl AbbrevStr, cause: ParseIntError) -> Self {
-        ParseVerseError::Chapter {
-            text: text.get(10),
-            cause,
-        }
-    }
-
-    fn verse(text: impl AbbrevStr, cause: ParseIntError) -> Self {
-        ParseVerseError::Verse {
-            text: text.get(10),
-            cause,
-        }
-    }
-}
+use crate::error::AbbrevStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-enum Book {
+pub enum Book {
     // Fun fact: setting Genesis as 1 causes this enum to be 1-based, which I am hoping will
     // enable the optimization where the None variant will simply appear as zero.
     Genesis = 1,    // Genesis
@@ -287,7 +76,7 @@ enum Book {
 }
 
 impl Book {
-    const fn from_u8(u: u8) -> Self {
+    pub const fn from_u8(u: u8) -> Self {
         match u {
             1 => Book::Genesis,
             2 => Book::Exodus,
@@ -445,7 +234,7 @@ impl From<u8> for Book {
 }
 
 impl FromStr for Book {
-    type Err = ParseVerseError;
+    type Err = ParseBookError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (name, number) = book_name_in_parts(s)?;
@@ -465,19 +254,19 @@ impl FromStr for Book {
             "SAMUEL" => match number {
                 Some(1) => Ok(Book::Samuel1),
                 Some(2) => Ok(Book::Samuel2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "KINGS" => match number {
                 Some(1) => Ok(Book::Kings1),
                 Some(2) => Ok(Book::Kings2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "CHRONICLES" => match number {
                 Some(1) => Ok(Book::Chronicles1),
                 Some(2) => Ok(Book::Chronicles2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "EZRA" => Ok(Book::Ezra),
@@ -517,7 +306,7 @@ impl FromStr for Book {
                 Some(1) => Ok(Book::John1),
                 Some(2) => Ok(Book::John2),
                 Some(3) => Ok(Book::John3),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "ACTS" => Ok(Book::Acts),
@@ -526,7 +315,7 @@ impl FromStr for Book {
             "CORINTHIANS" => match number {
                 Some(1) => Ok(Book::Corinthians1),
                 Some(2) => Ok(Book::Corinthians2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "GALATIANS" => Ok(Book::Galatians),
@@ -537,13 +326,13 @@ impl FromStr for Book {
             "THESSALONIANS" => match number {
                 Some(1) => Ok(Book::Thessalonians1),
                 Some(2) => Ok(Book::Thessalonians2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "TIMOTHY" => match number {
                 Some(1) => Ok(Book::Timothy1),
                 Some(2) => Ok(Book::Timothy2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "TITUS" => Ok(Book::Titus),
@@ -554,18 +343,18 @@ impl FromStr for Book {
             "PETER" => match number {
                 Some(1) => Ok(Book::Peter1),
                 Some(2) => Ok(Book::Peter2),
-                _ => Err(ParseVerseError::book(s)),
+                _ => Err(ParseBookError::new(s)),
             },
 
             "JUDE" => Ok(Book::Jude),
             "REVELATION" => Ok(Book::Revelation),
 
-            _ => Err(ParseVerseError::book(s)),
+            _ => Err(ParseBookError::new(s)),
         }
     }
 }
 
-fn book_name_in_parts(s: &str) -> Result<(&str, Option<NonZeroU8>), ParseVerseError> {
+fn book_name_in_parts(s: &str) -> Result<(&str, Option<NonZeroU8>), ParseBookError> {
     // We want to split on the first transition between numeric and non-numeric characters. At
     // this point in time, don't be passing us any damn books with Roman numerals. Romans killed
     // Jesus, after all.
@@ -597,8 +386,8 @@ fn book_name_in_parts(s: &str) -> Result<(&str, Option<NonZeroU8>), ParseVerseEr
 
     let (left, right) = s.split_at(idx);
     let (name, numeric) = characterize(left, right);
-    let n: u8 = numeric.parse().map_err(|_| ParseVerseError::book(s))?;
-    let n = NonZeroU8::new(n).ok_or_else(|| ParseVerseError::book(s))?;
+    let n: u8 = numeric.parse().map_err(|_| ParseBookError::new(s))?;
+    let n = NonZeroU8::new(n).ok_or_else(|| ParseBookError::new(s))?;
     Ok((name, Some(n)))
 }
 
@@ -613,136 +402,16 @@ fn first_numeric_nonnumeric_transition(s: &str) -> Option<usize> {
         .map(|idx| idx + 1)
 }
 
-fn main() {
-    let args = Args::parse();
-
-    if let Err(e) = run(&args) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("could not parse '{text}' as book")]
+pub struct ParseBookError {
+    text: String,
 }
 
-fn run(args: &Args) -> Result<()> {
-    let text = if args.translation.asv {
-        ASV_DAT
-    } else {
-        KJV_DAT
-    };
-
-    if let Some(command) = &args.command {
-        return dispatch(command, text);
+impl ParseBookError {
+    fn new(text: impl AbbrevStr) -> Self {
+        Self { text: text.get(20) }
     }
-
-    let book = args.book.expect("unreachable");
-    let index = build_index(text);
-    let book_index = index.get(&book).ok_or(Error::NotFound(NotFound {
-        entity: Entity::Book,
-        book,
-        location: None,
-    }))?;
-
-    match args.location {
-        Some(location) => load_and_print(book, location, book_index)?,
-        None => print_book(book, book_index),
-    }
-
-    Ok(())
-}
-
-fn dispatch(command: &Command, text: &str) -> Result<()> {
-    match command {
-        // It is not obvious to me that a search should be performed against a given translation
-        // rather than all translations, but we can revisit this later.
-        Command::Search { query } => search(query, text),
-    }
-    Ok(())
-}
-
-fn search(query: &str, text: &str) {
-    let query = query.to_ascii_uppercase();
-    let mut text_by_distance: Vec<_> = text
-        .lines()
-        .filter_map(|line| {
-            edit_distance(&query, &line[9..].to_ascii_uppercase()).map(|distance| (distance, line))
-        })
-        .collect();
-
-    text_by_distance.sort_by_key(|x| x.0);
-
-    let candidates = text_by_distance.into_iter().map(|(_, text)| text).take(10);
-    format_candidates(candidates);
-}
-
-fn format_candidates<'a>(candidates: impl IntoIterator<Item = &'a str>) {
-    // These candidates are the raw content of the dat file, meaning that each one includes a
-    // unique identifier which may be decomposed into book, chapter, verse, etc.
-    for candidate in candidates {
-        let book = Book::from_u8(candidate[..2].parse().unwrap());
-        let chapter: u16 = candidate[2..5].parse().unwrap();
-        let verse: u16 = candidate[5..8].parse().unwrap();
-        let text = &candidate[9..];
-        println!("{book} [{chapter}:{verse}] {text}");
-    }
-}
-
-fn print_book(book: Book, index: &BookIndex) {
-    for (chapter, chapter_index) in index {
-        println!("{book} {chapter}:");
-        print_chapter(chapter_index);
-    }
-}
-
-fn print_chapter(index: &ChapterIndex) {
-    println!();
-    for (&verse, &text) in index {
-        println!("{verse} {text}");
-    }
-    println!();
-}
-
-fn load_and_print(book: Book, location: Location, index: &BookIndex) -> Result<()> {
-    let chapter_index = index
-        .get(&location.chapter)
-        .ok_or(Error::NotFound(NotFound {
-            entity: Entity::Chapter,
-            book,
-            location: Some(location),
-        }))?;
-
-    if let Some(verse) = location.verse {
-        let &verse = chapter_index.get(&verse).ok_or(Error::NotFound(NotFound {
-            entity: Entity::Verse,
-            book,
-            location: Some(location),
-        }))?;
-        println!("{book}\n{location} {verse}");
-    } else {
-        let chapter = location.chapter;
-        println!("{book} {chapter}:");
-        print_chapter(chapter_index);
-    }
-
-    Ok(())
-}
-
-fn build_index(text: &str) -> Index {
-    let mut index: Index = IndexMap::new();
-
-    for record in text.lines() {
-        let book = Book::from_u8(record[..2].parse().unwrap());
-        let chapter: u16 = record[2..5].parse().unwrap();
-        let verse: u16 = record[5..8].parse().unwrap();
-        let text = &record[9..];
-
-        index
-            .entry(book)
-            .or_default()
-            .entry(chapter)
-            .or_default()
-            .insert(verse, text);
-    }
-
-    index
 }
 
 #[cfg(test)]
