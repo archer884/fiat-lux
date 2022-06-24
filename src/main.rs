@@ -2,16 +2,13 @@ mod book;
 mod error;
 mod location;
 
-use std::io;
-
 use book::Book;
 use clap::{Parser, Subcommand};
-use directories::ProjectDirs;
 use error::{Entity, Error, NotFound};
 use indexmap::IndexMap;
 use location::Location;
 use tantivy::{
-    collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::Schema, Index,
+    collector::TopDocs, query::QueryParser, schema::Schema, Index,
     IndexWriter, ReloadPolicy,
 };
 
@@ -79,7 +76,7 @@ fn run(args: &Args) -> Result<()> {
     };
 
     if let Some(command) = &args.command {
-        return dispatch(command);
+        return dispatch(command, text);
     }
 
     let book = args.book.expect("unreachable");
@@ -98,48 +95,21 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(command: &Command) -> Result<()> {
+fn dispatch(command: &Command, text: &str) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search(args) => search(args),
+        Command::Search(args) => search(args, text),
     }
 }
 
-fn search(args: &SearchArgs) -> Result<()> {
-    // We want to store our data someplace sane, so we're gonna use the directories library to
-    // decide where all this data goes.
-
-    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            "unable to initialize project directory",
-        )
-    })?;
-
-    // Well need to ensure the directory exists. That's easy, but I'm not sure how to know if
-    // there is an existing index in an existing directory. That seems important.
-
-    let index_path = dirs.data_dir().join("bible_idx");
-    if !index_path.exists() {
-        std::fs::create_dir_all(&index_path)?;
-    }
-
-    // Looks like there's a function for that, but let's comment this out for now and just go in-memory....
-
+fn search(args: &SearchArgs, text: &str) -> Result<()> {
     let schema = build_schema();
-    let translation = schema.get_field("translation").unwrap();
     let location = schema.get_field("location").unwrap();
     let content = schema.get_field("content").unwrap();
 
-    let index_dir = MmapDirectory::open(&index_path)?;
-    let index = if !tantivy::Index::exists(&index_dir)? {
-        let index = Index::create_in_dir(index_path, schema.clone())?;
-        write_index(&schema, &mut index.writer(0x3200000)?)?; // 50 megabytes of memory
-        index
-    } else {
-        tantivy::Index::open(index_dir)?
-    };
+    let index = Index::create_in_ram(schema.clone());
+    write_index(text, &schema, &mut index.writer(0x3200000)?)?;
 
     let reader = index
         .reader_builder()
@@ -152,13 +122,12 @@ fn search(args: &SearchArgs) -> Result<()> {
 
     for (_score, address) in candidates {
         let retrieved = searcher.doc(address)?;
-        let translation = retrieved.get_first(translation).unwrap().as_text().unwrap();
         let location = retrieved.get_first(location).unwrap().as_u64().unwrap();
         let content = retrieved.get_first(content).unwrap().as_text().unwrap();
 
         let (book, location) = decompose_id(location);
 
-        println!("{translation} {book} {location}\n{content}");
+        println!("{book} {location}\n{content}");
     }
 
     Ok(())
@@ -180,41 +149,17 @@ fn decompose_id(id: u64) -> (Book, Location) {
     )
 }
 
-fn write_index(schema: &Schema, writer: &mut IndexWriter) -> tantivy::Result<()> {
+fn write_index(text: &str, schema: &Schema, writer: &mut IndexWriter) -> tantivy::Result<()> {
     use tantivy::doc;
 
-    let translation = schema.get_field("translation").unwrap();
     let location = schema.get_field("location").unwrap();
     let content = schema.get_field("content").unwrap();
 
-    // let mut count = 0;
-
-    for (id, text) in parse_verses_with_id(ASV_DAT) {
+    for (id, text) in parse_verses_with_id(text) {
         writer.add_document(doc!(
-            translation => "ASV",
             location => id,
             content => text,
         ))?;
-
-        // count += 1;
-        // if count == 1000 {
-        //     writer.commit()?;
-        //     count = 0;
-        // }
-    }
-
-    for (id, text) in parse_verses_with_id(KJV_DAT) {
-        writer.add_document(doc!(
-            translation => "KJV",
-            location => id,
-            content => text,
-        ))?;
-        
-        // count += 1;
-        // if count == 1000 {
-        //     writer.commit()?;
-        //     count = 0;
-        // }
     }
     
     writer.commit()?;
@@ -224,7 +169,6 @@ fn write_index(schema: &Schema, writer: &mut IndexWriter) -> tantivy::Result<()>
 fn build_schema() -> Schema {
     use tantivy::schema;
     let mut builder = Schema::builder();
-    builder.add_text_field("translation", schema::STORED);
     builder.add_u64_field("location", schema::STORED);
     builder.add_text_field("content", schema::TEXT | schema::STORED);
     builder.build()
