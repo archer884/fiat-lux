@@ -1,15 +1,47 @@
 use std::{fmt, num::ParseIntError, str::FromStr};
 
-use crate::error::AbbrevStr;
+use crate::{book::Book, error::AbbrevStr};
 
-/// A full designator of book, chapter, and verse.
+/// Book, chapter and verse
+///
+/// A location such as this can be used to search translations for a specific verse.
 #[derive(Clone, Copy, Debug)]
 pub struct Location {
+    pub book: Book,
+    pub chapter: u16,
+    pub verse: u16,
+}
+
+impl Location {
+    pub fn from_path(path: &str) -> Self {
+        let path = path.trim_start_matches('/');
+        let mut segments = path.split('/');
+
+        Self {
+            book: segments.next().unwrap().parse::<u8>().unwrap().into(),
+            chapter: segments.next().unwrap().parse().unwrap(),
+            verse: segments.next().unwrap().parse().unwrap(),
+        }
+    }
+
+    pub fn from_id<T: Into<u64>>(id: T) -> Self {
+        let id = id.into();
+        Self {
+            book: ((id / 1_000_000) as u8).into(),
+            chapter: (id % 1_000_000 / 1000) as u16,
+            verse: (id % 1000) as u16,
+        }
+    }
+}
+
+/// Chapter and verse
+#[derive(Clone, Copy, Debug)]
+pub struct PartialLocation {
     pub chapter: u16,
     pub verse: Option<u16>,
 }
 
-impl fmt::Display for Location {
+impl fmt::Display for PartialLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let chapter = self.chapter;
         match self.verse {
@@ -19,7 +51,7 @@ impl fmt::Display for Location {
     }
 }
 
-impl FromStr for Location {
+impl FromStr for PartialLocation {
     type Err = ParseLocationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -40,7 +72,7 @@ impl FromStr for Location {
             .map_err(|e| ParseLocationError::chapter(chapter, e))?;
 
         if verse.is_empty() {
-            Ok(Location {
+            Ok(PartialLocation {
                 chapter,
                 verse: None,
             })
@@ -48,7 +80,7 @@ impl FromStr for Location {
             let verse: u16 = verse
                 .parse()
                 .map_err(|e| ParseLocationError::verse(verse, e))?;
-            Ok(Location {
+            Ok(PartialLocation {
                 chapter,
                 verse: Some(verse),
             })

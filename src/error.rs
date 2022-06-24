@@ -1,6 +1,4 @@
-use std::{fmt, io};
-
-use crate::{book::Book, location::Location};
+use std::io;
 
 pub trait AbbrevStr: AsRef<str> + Into<String> {
     fn get(self, limit: usize) -> String {
@@ -19,9 +17,6 @@ impl<T: AsRef<str> + Into<String>> AbbrevStr for T {}
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    NotFound(NotFound),
-
-    #[error(transparent)]
     IO(#[from] io::Error),
 
     #[error(transparent)]
@@ -35,39 +30,4 @@ pub enum Error {
 
     #[error(transparent)]
     TantivyQuery(#[from] tantivy::query::QueryParserError),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub struct NotFound {
-    pub entity: Entity,
-    pub book: Book,
-    pub location: Option<Location>,
-}
-
-impl fmt::Display for NotFound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let entity = self.entity;
-        let book = self.book;
-        match self.location {
-            Some(location) => write!(f, "{entity} not found: {book} {location}"),
-            None => write!(f, "{entity} not found: {book}"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Entity {
-    Book,
-    Chapter,
-    Verse,
-}
-
-impl fmt::Display for Entity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Entity::Book => f.write_str("book"),
-            Entity::Chapter => f.write_str("chapter"),
-            Entity::Verse => f.write_str("verse"),
-        }
-    }
 }

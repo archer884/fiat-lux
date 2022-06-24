@@ -2,39 +2,40 @@ mod book;
 mod error;
 mod location;
 
-use std::io;
+use std::{
+    cmp::{Ord, Ordering},
+    fmt::{self, Write},
+    io,
+    str::FromStr,
+};
 
 use book::Book;
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
-use error::{Entity, Error, NotFound};
-use indexmap::IndexMap;
-use location::Location;
+use error::{AbbrevStr, Error};
+use location::{Location, PartialLocation};
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
-    schema::{Facet, FacetOptions, IndexRecordOption, Schema},
-    Index, IndexWriter, ReloadPolicy, Term,
+    schema::{Facet, Field, IndexRecordOption, Schema},
+    Document, Index, IndexWriter, ReloadPolicy, Term,
 };
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
 static KJV_DAT: &str = include_str!("../resource/kjv.dat");
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-type FullIndex<'a> = IndexMap<Book, BookIndex<'a>>;
-type BookIndex<'a> = IndexMap<u16, ChapterIndex<'a>>;
-type ChapterIndex<'a> = IndexMap<u16, &'a str>;
 
 #[derive(Clone, Debug, Parser)]
 #[clap(subcommand_negates_reqs(true))]
 struct Args {
     #[clap(required = true)]
     book: Option<Book>,
-    location: Option<Location>,
+    location: Option<PartialLocation>,
 
     #[clap(flatten)]
-    translation: Translations,
+    translation: TranslationArgs,
 
     #[clap(subcommand)]
     command: Option<Command>,
@@ -53,9 +54,9 @@ struct SearchArgs {
     limit: Option<usize>,
 }
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Copy, Debug, Parser)]
 #[clap(group(clap::ArgGroup::new("translation").required(false)))]
-struct Translations {
+struct TranslationArgs {
     /// King James Version
     #[clap(long, group = "translation")]
     kjv: bool,
@@ -63,6 +64,159 @@ struct Translations {
     /// American Standard Version
     #[clap(long, group = "translation")]
     asv: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+enum Translation {
+    Kjv = 1,
+    Asv = 2,
+}
+
+impl Translation {
+    fn text(self) -> &'static str {
+        match self {
+            Translation::Kjv => KJV_DAT,
+            Translation::Asv => ASV_DAT,
+        }
+    }
+
+    fn facet(self) -> Facet {
+        Facet::from(&format!("/{self}"))
+    }
+}
+
+impl FromStr for Translation {
+    type Err = ParseTranslationError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "KJV" => Ok(Translation::Kjv),
+            "ASV" => Ok(Translation::Asv),
+            _ => Err(ParseTranslationError::new(s)),
+        }
+    }
+}
+
+impl From<TranslationArgs> for Translation {
+    fn from(args: TranslationArgs) -> Self {
+        if args.asv {
+            Translation::Asv
+        } else {
+            Translation::Kjv
+        }
+    }
+}
+
+impl fmt::Display for Translation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Translation::Kjv => f.write_str("KJV"),
+            Translation::Asv => f.write_str("ASV"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("unknown translation '{text}'")]
+struct ParseTranslationError {
+    text: String,
+}
+
+impl ParseTranslationError {
+    fn new(text: impl AbbrevStr) -> Self {
+        Self { text: text.get(7) }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Text {
+    translation: Translation,
+    book: Book,
+    chapter: u16,
+    verse: u16,
+    content: String,
+}
+
+impl Text {
+    fn from_document(document: Document, fields: &SearchFields) -> Self {
+        let translation = document
+            .get_first(fields.translation)
+            .unwrap()
+            .as_facet()
+            .unwrap()
+            .to_string();
+        let translation: Translation = translation.trim_start_matches('/').parse().unwrap();
+
+        let location = document
+            .get_first(fields.location)
+            .unwrap()
+            .as_facet()
+            .unwrap()
+            .to_string();
+        let mut segments = location.trim_start_matches('/').split('/');
+
+        let book = segments.next().unwrap().parse::<u8>().unwrap().into();
+        let chapter = segments.next().unwrap().parse().unwrap();
+        let verse = segments.next().unwrap().parse().unwrap();
+
+        let content = document
+            .get_first(fields.content)
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .into();
+
+        Self {
+            book,
+            chapter,
+            verse,
+            content,
+            translation,
+        }
+    }
+}
+
+impl Eq for Text {}
+
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.book == other.book && self.chapter == other.chapter && self.verse == other.verse
+    }
+}
+
+impl Ord for Text {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.book.cmp(&other.book) {
+            Ordering::Equal => match self.chapter.cmp(&other.chapter) {
+                Ordering::Equal => self.verse.cmp(&other.verse),
+                ordering => ordering,
+            },
+            ordering => ordering,
+        }
+    }
+}
+
+impl PartialOrd for Text {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct SearchFields {
+    translation: Field,
+    location: Field,
+    content: Field,
+}
+
+impl SearchFields {
+    fn from_schema(schema: &Schema) -> Self {
+        Self {
+            translation: schema.get_field("translation").unwrap(),
+            location: schema.get_field("location").unwrap(),
+            content: schema.get_field("content").unwrap(),
+        }
+    }
 }
 
 fn main() {
@@ -76,32 +230,80 @@ fn main() {
 
 fn run(args: &Args) -> Result<()> {
     if let Some(command) = &args.command {
-        return dispatch(command, &args.translation);
+        return dispatch(command, args.translation.into());
     }
 
-    let text = if args.translation.asv {
-        ASV_DAT
-    } else {
-        KJV_DAT
-    };
-
     let book = args.book.expect("unreachable");
-    let index = build_index(text);
-    let book_index = index.get(&book).ok_or(Error::NotFound(NotFound {
-        entity: Entity::Book,
+    let (index, fields) = initialize_search()?;
+    let texts = search_by_book_and_location(
+        &index,
+        &fields,
         book,
-        location: None,
-    }))?;
+        args.location,
+        args.translation.into(),
+    )?;
 
-    match args.location {
-        Some(location) => load_and_print(book, location, book_index)?,
-        None => print_book(book, book_index),
+    for text in texts {
+        let Text {
+            book,
+            chapter,
+            verse,
+            content,
+            ..
+        } = text;
+        println!("{book} {chapter}:{verse}\n{content}");
     }
 
     Ok(())
 }
 
-fn dispatch(command: &Command, translation: &Translations) -> Result<()> {
+fn search_by_book_and_location(
+    index: &Index,
+    fields: &SearchFields,
+    book: Book,
+    location: Option<PartialLocation>,
+    translation: Translation,
+) -> tantivy::Result<Vec<Text>> {
+    let mut buf = format!("/{}", book as u8);
+    if let Some(location) = &location {
+        let chapter = location.chapter;
+        write!(buf, "/{chapter}").unwrap();
+        if let Some(verse) = location.verse {
+            write!(buf, "/{verse}").unwrap()
+        }
+    }
+
+    let location = TermQuery::new(
+        Term::from_facet(fields.location, &Facet::from(&buf)),
+        IndexRecordOption::Basic,
+    );
+    let translation = TermQuery::new(
+        Term::from_facet(fields.translation, &Facet::from(&format!("/{translation}"))),
+        IndexRecordOption::Basic,
+    );
+    let query = BooleanQuery::intersection(vec![Box::new(location), Box::new(translation)]);
+
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::OnCommit)
+        .try_into()?;
+    let searcher = reader.searcher();
+    // In this case, we don't actually want to limit the docs returned, and the number will be
+    // small in most cases, but I have no idea what collector to use or how, so...
+    let documents = searcher
+        .search(&query, &TopDocs::with_limit(10_000))?
+        .into_iter()
+        .map(|(_, candidate)| searcher.doc(candidate));
+
+    let mut texts = Vec::new();
+    for document in documents {
+        texts.push(Text::from_document(document?, fields));
+    }
+    texts.sort();
+    Ok(texts)
+}
+
+fn dispatch(command: &Command, translation: Translation) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
@@ -109,7 +311,63 @@ fn dispatch(command: &Command, translation: &Translations) -> Result<()> {
     }
 }
 
-fn search(args: &SearchArgs, translation: &Translations) -> Result<()> {
+fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
+    let (index, fields) = initialize_search()?;
+
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::OnCommit)
+        .try_into()?;
+    let searcher = reader.searcher();
+
+    // This query parser constructs a query from the user's search string. We can break the search
+    // string into multiple strings at some point to make the cli less annoying, maybe? But for now
+    // the user provides a monolithic string.
+
+    let query_parser = QueryParser::for_index(&index, vec![fields.content]);
+    let query = query_parser.parse_query(&args.query)?;
+
+    // That gives us one search term. We need to make a second term for the facet referencing the
+    // correct translation.
+
+    let translation_term = Term::from_facet(fields.translation, &translation.facet());
+    let term_query = TermQuery::new(translation_term, IndexRecordOption::Basic);
+
+    // Damned if I know the correct way to do this, but this seems to work, so....
+
+    let combined_query = BooleanQuery::intersection(vec![query, Box::new(term_query)]);
+    let candidates = searcher.search(
+        &combined_query,
+        &TopDocs::with_limit(args.limit.unwrap_or(10)),
+    )?;
+
+    for (_score, address) in candidates {
+        let retrieved = searcher.doc(address)?;
+        let location = retrieved
+            .get_first(fields.location)
+            .unwrap()
+            .as_facet()
+            .unwrap()
+            .to_string();
+        let content = retrieved
+            .get_first(fields.content)
+            .unwrap()
+            .as_text()
+            .unwrap();
+
+        let Location {
+            book,
+            chapter,
+            verse,
+        } = Location::from_path(&location);
+
+        println!("{book} {chapter}:{verse}\n{content}");
+    }
+
+    Ok(())
+}
+
+fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
     // We want to store our data someplace sane, so we're gonna use the directories library to
     // decide where all this data goes.
 
@@ -129,99 +387,42 @@ fn search(args: &SearchArgs, translation: &Translations) -> Result<()> {
     }
 
     let schema = build_schema();
-    let translation_f = schema.get_field("translation").unwrap();
-    let location_f = schema.get_field("location").unwrap();
-    let content_f = schema.get_field("content").unwrap();
+    let fields = SearchFields::from_schema(&schema);
 
     let index_dir = MmapDirectory::open(&index_path)?;
-    let index = if !tantivy::Index::exists(&index_dir)? {
-        let index = Index::create_in_dir(index_path, schema.clone())?;
+    if !tantivy::Index::exists(&index_dir)? {
+        let index = Index::create_in_dir(index_path, schema)?;
         // Index using 50 megabytes of memory
-        write_index("kjv", KJV_DAT, &schema, &mut index.writer(0x3200000)?)?;
-        write_index("asv", ASV_DAT, &schema, &mut index.writer(0x3200000)?)?;
-        index
+        write_index(Translation::Kjv, &fields, &mut index.writer(0x3200000)?)?;
+        write_index(Translation::Asv, &fields, &mut index.writer(0x3200000)?)?;
+        Ok((index, fields))
     } else {
-        tantivy::Index::open(index_dir)?
-    };
-
-    let reader = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::OnCommit)
-        .try_into()?;
-    let searcher = reader.searcher();
-
-    // This query parser constructs a query from the user's search string. We can break the search
-    // string into multiple strings at some point to make the cli less annoying, maybe? But for now
-    // the user provides a monolithic string.
-    let query_parser = QueryParser::for_index(&index, vec![content_f]);
-    let query = query_parser.parse_query(&args.query)?;
-
-    // That gives us one search term. We need to make a second term for the facet referencing the
-    // correct translation.
-
-    let translation_facet = if translation.asv {
-        Facet::from("/translation/asv")
-    } else {
-        Facet::from("/translation/kjv")
-    };
-    let translation_term = Term::from_facet(translation_f, &translation_facet);
-    let term_query = TermQuery::new(translation_term, IndexRecordOption::Basic);
-
-    // Damned if I know the correct way to do this, but this seems to work, so....
-
-    let combined_query = BooleanQuery::intersection(vec![query, Box::new(term_query)]);
-    let candidates = searcher.search(
-        &combined_query,
-        &TopDocs::with_limit(args.limit.unwrap_or(10)),
-    )?;
-
-    for (_score, address) in candidates {
-        let retrieved = searcher.doc(address)?;
-        let location = retrieved.get_first(location_f).unwrap().as_u64().unwrap();
-        let content = retrieved.get_first(content_f).unwrap().as_text().unwrap();
-
-        let (book, location) = decompose_id(location);
-
-        println!("{book} {location}\n{content}");
+        Ok((tantivy::Index::open(index_dir)?, fields))
     }
-
-    Ok(())
-}
-
-fn decompose_id(id: u64) -> (Book, Location) {
-    // Just the one or two most significant digits matter for the book id.
-    // 01001001
-
-    let chapter = (id % 1_000_000 / 1000) as u16;
-    let verse = (id % 1000) as u16;
-
-    (
-        ((id / 1_000_000) as u8).into(),
-        Location {
-            chapter,
-            verse: Some(verse),
-        },
-    )
 }
 
 fn write_index(
-    translation_id: &str,
-    text: &str,
-    schema: &Schema,
+    translation: Translation,
+    fields: &SearchFields,
     writer: &mut IndexWriter,
 ) -> tantivy::Result<()> {
     use tantivy::doc;
 
-    let translation_facet = format!("/translation/{translation_id}");
-    let translation = schema.get_field("translation").unwrap();
-    let location = schema.get_field("location").unwrap();
-    let content = schema.get_field("content").unwrap();
+    for (id, text) in parse_verses_with_id(translation.text()) {
+        let Location {
+            book,
+            chapter,
+            verse,
+        } = Location::from_id(id);
 
-    for (id, text) in parse_verses_with_id(text) {
+        let book = book as u8;
+        let location = Facet::from(&format!("/{book}/{chapter}/{verse}"));
+        let translation = Facet::from(&format!("/{translation}"));
+
         writer.add_document(doc!(
-            translation => Facet::from(&translation_facet),
-            location => id,
-            content => text,
+            fields.translation => translation,
+            fields.location => location,
+            fields.content => text,
         ))?;
     }
 
@@ -231,9 +432,12 @@ fn write_index(
 
 fn build_schema() -> Schema {
     use tantivy::schema;
+
+    let facet_options = schema::INDEXED | schema::STORED;
+
     let mut builder = Schema::builder();
-    builder.add_facet_field("translation", FacetOptions::default());
-    builder.add_u64_field("location", schema::STORED);
+    builder.add_facet_field("translation", facet_options.clone());
+    builder.add_facet_field("location", facet_options);
     builder.add_text_field("content", schema::TEXT | schema::STORED);
     builder.build()
 }
@@ -241,64 +445,4 @@ fn build_schema() -> Schema {
 fn parse_verses_with_id(text: &str) -> impl Iterator<Item = (u64, &str)> {
     text.lines()
         .filter_map(|line| line[..8].parse::<u64>().ok().map(|id| (id, &line[9..])))
-}
-
-fn print_book(book: Book, index: &BookIndex) {
-    for (chapter, chapter_index) in index {
-        println!("{book} {chapter}:");
-        print_chapter(chapter_index);
-    }
-}
-
-fn print_chapter(index: &ChapterIndex) {
-    println!();
-    for (&verse, &text) in index {
-        println!("{verse} {text}");
-    }
-    println!();
-}
-
-fn load_and_print(book: Book, location: Location, index: &BookIndex) -> Result<()> {
-    let chapter_index = index
-        .get(&location.chapter)
-        .ok_or(Error::NotFound(NotFound {
-            entity: Entity::Chapter,
-            book,
-            location: Some(location),
-        }))?;
-
-    if let Some(verse) = location.verse {
-        let &verse = chapter_index.get(&verse).ok_or(Error::NotFound(NotFound {
-            entity: Entity::Verse,
-            book,
-            location: Some(location),
-        }))?;
-        println!("{book}\n{location} {verse}");
-    } else {
-        let chapter = location.chapter;
-        println!("{book} {chapter}:");
-        print_chapter(chapter_index);
-    }
-
-    Ok(())
-}
-
-fn build_index(text: &str) -> FullIndex {
-    let mut index: FullIndex = IndexMap::new();
-
-    for record in text.lines() {
-        let book = Book::from_u8(record[..2].parse().unwrap());
-        let chapter: u16 = record[2..5].parse().unwrap();
-        let verse: u16 = record[5..8].parse().unwrap();
-        let text = &record[9..];
-
-        index
-            .entry(book)
-            .or_default()
-            .entry(chapter)
-            .or_default()
-            .insert(verse, text);
-    }
-
-    index
 }
