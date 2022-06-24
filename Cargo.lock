@@ -67,14 +67,16 @@ checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
 
 [[package]]
 name = "bible"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "comfy-table",
  "directories",
  "indexmap",
+ "pager",
  "regex",
  "tantivy",
+ "terminal_size",
  "thiserror",
 ]
 
@@ -315,6 +317,27 @@ name = "either"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
+
+[[package]]
+name = "errno"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f639046355ee4f37944e44f60642c6f3a7efa3cf6b78c78a0d989a8ce6c396a1"
+dependencies = [
+ "errno-dragonfly",
+ "libc",
+ "winapi",
+]
+
+[[package]]
+name = "errno-dragonfly"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa68f1b12764fab894d2755d2518754e71b4fd80ecfb822714a1206c2aab39bf"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "fail"
@@ -659,6 +682,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2981bd7cfb2a70e6c50083c60561275a269fc7458f151c53b126ec1b15cc040"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "pager"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c7d08cf0d0b55c4f0ffedb5e06569ea212e85d622975071370393970491968"
+dependencies = [
+ "errno",
+ "libc",
 ]
 
 [[package]]
@@ -1127,6 +1160,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bab24d30b911b2376f3a13cc2cd443142f0c81dda04c118693e35b3835757755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633c1a546cee861a1a6d0dc69ebeca693bf4296661ba7852b9d21d159e0506df"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [package]
 name = "bible"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,6 +10,8 @@ clap = { version = "3.2.6", features = ["derive"] }
 comfy-table = "6.0.0"
 directories = "4.0.1"
 indexmap = "1.9.1"
+pager = "0.16.0"
 regex = "1.5.6"
 tantivy = "0.18.0"
+terminal_size = "0.1.17"
 thiserror = "1.0.31"
