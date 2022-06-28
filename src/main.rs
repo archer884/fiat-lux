@@ -261,13 +261,26 @@ fn run(args: &Args) -> Result<()> {
 }
 
 fn format_texts(texts: &[Text]) {
-    let (w, h) = terminal_size::terminal_size()
+    #[cfg(not(target_os = "win"))]
+    let width = {
+        let (w, h) = terminal_size::terminal_size()
         .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
         .unwrap_or((80, 20));
-
-    if texts.len() > h as usize {
-        pager::Pager::with_default_pager("bat").setup();
-    }
+        
+        if texts.len() > h as usize {
+            pager::Pager::with_default_pager("bat").setup();
+        }
+        
+        w
+    };
+    
+    #[cfg(target_os = "win")]
+    let width = {
+        let (w, _h) = terminal_size::terminal_size()
+            .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
+            .unwrap_or((80, 20));
+        w
+    };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Chapter {
@@ -289,7 +302,7 @@ fn format_texts(texts: &[Text]) {
 
     table.set_content_arrangement(ContentArrangement::DynamicFullWidth);
     table.load_preset(comfy_table::presets::NOTHING);
-    table.set_width(w.min(100));
+    table.set_width(width.min(100));
 
     for text in texts {
         if current.is_none()
