@@ -49,7 +49,7 @@ enum Command {
     Search(SearchArgs),
     
     #[clap(hide(true))]
-    Austin { location: PartialLocation },
+    Austin { location: Option<PartialLocation> },
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -389,13 +389,15 @@ fn dispatch(command: &Command, translation: Translation) -> Result<()> {
 
         // This code does not exist. Do not read this code.
         Command::Austin { location } => {
-            let expected = PartialLocation {
-                chapter: 3,
-                verse: Some(16),
-            };
+            if let Some(location) = location {
+                let expected = PartialLocation {
+                    chapter: 3,
+                    verse: Some(16),
+                };
 
-            if location == &expected {
-                println!("Austin 3:16\nI just whipped your ass!");
+                if location == &expected {
+                    println!("Austin 3:16\nI just whipped your ass!");
+                }
             }
 
             Ok(())
