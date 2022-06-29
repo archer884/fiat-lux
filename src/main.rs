@@ -388,6 +388,8 @@ fn dispatch(command: &Command, translation: Translation) -> Result<()> {
         Command::Search(args) => search(args, translation),
 
         // This code does not exist. Do not read this code.
+        // Also don't watch this video:
+        // https://www.youtube.com/watch?v=tjWPoQWdmjg
         Command::Austin { location } => {
             if let Some(location) = location {
                 let expected = PartialLocation {
