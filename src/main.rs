@@ -264,7 +264,7 @@ fn run(args: &Args) -> Result<()> {
 }
 
 fn format_texts(texts: &[Text]) {
-    #[cfg(not(target_os = "win"))]
+    #[cfg(not(target_os = "windows"))]
     let width = {
         let (w, h) = terminal_size::terminal_size()
         .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
@@ -277,7 +277,7 @@ fn format_texts(texts: &[Text]) {
         w
     };
     
-    #[cfg(target_os = "win")]
+    #[cfg(target_os = "windows")]
     let width = {
         let (w, _h) = terminal_size::terminal_size()
             .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))

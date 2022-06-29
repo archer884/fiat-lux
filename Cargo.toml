@@ -14,7 +14,7 @@ clap = { version = "3.2.6", features = ["derive"] }
 comfy-table = "6.0.0"
 directories = "4.0.1"
 indexmap = "1.9.1"
-pager = { version = "0.16.0" }
+pager = { version = "0.16.0", optional = true }
 regex = "1.5.6"
 tantivy = "0.18.0"
 terminal_size = "0.1.17"
