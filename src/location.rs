@@ -24,7 +24,7 @@ impl Location {
 }
 
 /// Chapter and verse
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartialLocation {
     pub chapter: u16,
     pub verse: Option<u16>,

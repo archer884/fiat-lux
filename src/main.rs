@@ -47,6 +47,9 @@ struct Args {
 enum Command {
     #[clap(alias = "s")]
     Search(SearchArgs),
+    
+    #[clap(hide(true))]
+    Austin { location: PartialLocation },
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -383,6 +386,20 @@ fn dispatch(command: &Command, translation: Translation) -> Result<()> {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
         Command::Search(args) => search(args, translation),
+
+        // This code does not exist. Do not read this code.
+        Command::Austin { location } => {
+            let expected = PartialLocation {
+                chapter: 3,
+                verse: Some(16),
+            };
+
+            if location == &expected {
+                println!("Austin 3:16\nI just whipped your ass!");
+            }
+
+            Ok(())
+        }
     }
 }
 
