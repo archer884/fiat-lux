@@ -47,8 +47,8 @@ struct Args {
 enum Command {
     #[clap(alias = "s")]
     Search(SearchArgs),
-    
-    #[clap(hide(true))]
+
+    #[clap(alias = "Austin", hide(true))]
     Austin { location: Option<PartialLocation> },
 }
 
@@ -248,14 +248,7 @@ fn run(args: &Args) -> Result<()> {
     )?;
 
     if texts.len() == 1 {
-        let Text {
-            book,
-            chapter,
-            verse,
-            content,
-            ..
-        } = texts.into_iter().next().unwrap();
-        println!("{book} {chapter}:{verse}\n{content}");
+        format_verse(texts.into_iter().next().unwrap());
     } else {
         format_texts(&texts);
     }
@@ -263,21 +256,46 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn format_verse(
+    Text {
+        book,
+        chapter,
+        verse,
+        content,
+    }: Text,
+) {
+    let width = terminal_size::terminal_size()
+        .map(|(width, _)| width.0)
+        .unwrap_or(80);
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::DynamicFullWidth);
+    table.load_preset(comfy_table::presets::NOTHING);
+    table.set_width(width.min(100));
+
+    table.add_row(vec![
+        Cell::new(format!("{book} {chapter}:{verse}")).add_attribute(Attribute::Bold)
+    ]);
+    table.add_row(&[content]);
+
+    println!("{table}");
+}
+
 fn format_texts(texts: &[Text]) {
-    #[cfg(feature = "pager")]
+    #[cfg(not(target_os = "windows"))]
     let width = {
         let (w, h) = terminal_size::terminal_size()
-        .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-        .unwrap_or((80, 20));
-        
+            .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
+            .unwrap_or((80, 20));
+
         if texts.len() > h as usize {
             pager::Pager::with_default_pager("bat").setup();
         }
-        
+
         w
     };
-    
-    #[cfg(not(feature = "pager"))]
+
+    #[cfg(target_os = "windows")]
     let width = {
         let (w, _h) = terminal_size::terminal_size()
             .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
