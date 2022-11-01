@@ -47,7 +47,7 @@ struct Args {
 enum Command {
     #[clap(alias = "s")]
     Search(SearchArgs),
-    
+
     #[clap(hide(true))]
     Austin { location: Option<PartialLocation> },
 }
@@ -267,16 +267,16 @@ fn format_texts(texts: &[Text]) {
     #[cfg(feature = "pager")]
     let width = {
         let (w, h) = terminal_size::terminal_size()
-        .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-        .unwrap_or((80, 20));
-        
+            .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
+            .unwrap_or((80, 20));
+
         if texts.len() > h as usize {
             pager::Pager::with_default_pager("bat").setup();
         }
-        
+
         w
     };
-    
+
     #[cfg(not(feature = "pager"))]
     let width = {
         let (w, _h) = terminal_size::terminal_size()
@@ -473,9 +473,12 @@ fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
     let index_dir = MmapDirectory::open(&index_path)?;
     if !tantivy::Index::exists(&index_dir)? {
         let index = Index::create_in_dir(index_path, schema)?;
-        // Index using 50 megabytes of memory
-        write_index(Translation::Kjv, &fields, &mut index.writer(0x3200000)?)?;
-        write_index(Translation::Asv, &fields, &mut index.writer(0x3200000)?)?;
+
+        /// 500 megabytes
+        const ARENA_SIZE: usize = 0x100000 * 500;
+        write_index(Translation::Kjv, &fields, &mut index.writer(ARENA_SIZE)?)?;
+        write_index(Translation::Asv, &fields, &mut index.writer(ARENA_SIZE)?)?;
+
         Ok((index, fields))
     } else {
         Ok((tantivy::Index::open(index_dir)?, fields))
