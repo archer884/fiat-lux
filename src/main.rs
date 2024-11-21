@@ -20,8 +20,8 @@ use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
-    schema::{Facet, Field, IndexRecordOption, Schema},
-    Document, Index, IndexWriter, ReloadPolicy, Term,
+    schema::{Facet, Field, IndexRecordOption, Schema, Value},
+    Index, IndexWriter, ReloadPolicy, TantivyDocument as Document, Term,
 };
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
@@ -145,14 +145,6 @@ struct Text {
 
 impl Text {
     fn from_document(document: Document, fields: &SearchFields) -> Self {
-        // let translation = document
-        //     .get_first(fields.translation)
-        //     .unwrap()
-        //     .as_facet()
-        //     .unwrap()
-        //     .to_string();
-        // let translation: Translation = translation.trim_start_matches('/').parse().unwrap();
-
         let location = document
             .get_first(fields.location)
             .unwrap()
@@ -168,7 +160,7 @@ impl Text {
         let content = document
             .get_first(fields.content)
             .unwrap()
-            .as_text()
+            .as_str()
             .unwrap()
             .into();
 
@@ -177,7 +169,6 @@ impl Text {
             chapter,
             verse,
             content,
-            // translation,
         }
     }
 }
@@ -255,6 +246,9 @@ fn run(args: &Args) -> Result<()> {
             content,
             ..
         } = texts.into_iter().next().unwrap();
+        let width =
+            terminal_size::terminal_size().map_or(100, |(terminal_size::Width(w), _)| w.min(100));
+        let content = textwrap::fill(&content, usize::from(width));
         println!("{book} {chapter}:{verse}\n{content}");
     } else {
         format_texts(&texts);
@@ -268,7 +262,7 @@ fn format_texts(texts: &[Text]) {
     let width = {
         let (w, h) = terminal_size::terminal_size()
             .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-            .unwrap_or((80, 20));
+            .unwrap_or((100, 20));
 
         if texts.len() > h as usize {
             pager::Pager::with_default_pager("bat").setup();
@@ -281,7 +275,7 @@ fn format_texts(texts: &[Text]) {
     let width = {
         let (w, _h) = terminal_size::terminal_size()
             .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-            .unwrap_or((80, 20));
+            .unwrap_or((100, 20));
         w
     };
 
@@ -363,7 +357,7 @@ fn search_by_book_and_location(
 
     let reader = index
         .reader_builder()
-        .reload_policy(ReloadPolicy::OnCommit)
+        .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
     let searcher = reader.searcher();
     // In this case, we don't actually want to limit the docs returned, and the number will be
@@ -412,7 +406,7 @@ fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
 
     let reader = index
         .reader_builder()
-        .reload_policy(ReloadPolicy::OnCommit)
+        .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
     let searcher = reader.searcher();
 
