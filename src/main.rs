@@ -1,10 +1,11 @@
 mod book;
 mod error;
 mod location;
+mod search;
+mod text;
 
 use std::{
     borrow::Cow,
-    cmp::{Ord, Ordering},
     fmt::{self, Write},
     io,
     str::FromStr,
@@ -16,13 +17,15 @@ use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
+use search::SearchFields;
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
-    schema::{Facet, Field, IndexRecordOption, Schema, Value},
-    Index, IndexWriter, ReloadPolicy, TantivyDocument as Document, Term,
+    schema::{Facet, IndexRecordOption, Schema},
+    Index, IndexWriter, ReloadPolicy, Term,
 };
+use text::{Chapter, Text};
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
 static KJV_DAT: &str = include_str!("../resource/kjv.dat");
@@ -134,87 +137,6 @@ impl ParseTranslationError {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Text {
-    // translation: Translation,
-    book: Book,
-    chapter: u16,
-    verse: u16,
-    content: String,
-}
-
-impl Text {
-    fn from_document(document: Document, fields: &SearchFields) -> Self {
-        let location = document
-            .get_first(fields.location)
-            .unwrap()
-            .as_facet()
-            .unwrap()
-            .to_string();
-        let mut segments = location.trim_start_matches('/').split('/');
-
-        let book = segments.next().unwrap().parse::<u8>().unwrap().into();
-        let chapter = segments.next().unwrap().parse().unwrap();
-        let verse = segments.next().unwrap().parse().unwrap();
-
-        let content = document
-            .get_first(fields.content)
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .into();
-
-        Self {
-            book,
-            chapter,
-            verse,
-            content,
-        }
-    }
-}
-
-impl Eq for Text {}
-
-impl PartialEq for Text {
-    fn eq(&self, other: &Self) -> bool {
-        self.book == other.book && self.chapter == other.chapter && self.verse == other.verse
-    }
-}
-
-impl Ord for Text {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.book.cmp(&other.book) {
-            Ordering::Equal => match self.chapter.cmp(&other.chapter) {
-                Ordering::Equal => self.verse.cmp(&other.verse),
-                ordering => ordering,
-            },
-            ordering => ordering,
-        }
-    }
-}
-
-impl PartialOrd for Text {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-struct SearchFields {
-    translation: Field,
-    location: Field,
-    content: Field,
-}
-
-impl SearchFields {
-    fn from_schema(schema: &Schema) -> Self {
-        Self {
-            translation: schema.get_field("translation").unwrap(),
-            location: schema.get_field("location").unwrap(),
-            content: schema.get_field("content").unwrap(),
-        }
-    }
-}
-
 fn main() {
     let args = Args::parse();
     if let Err(e) = run(&args) {
@@ -244,7 +166,6 @@ fn run(args: &Args) -> Result<()> {
             chapter,
             verse,
             content,
-            ..
         } = texts.into_iter().next().unwrap();
         let width =
             terminal_size::terminal_size().map_or(100, |(terminal_size::Width(w), _)| w.min(100));
@@ -278,21 +199,6 @@ fn format_texts(texts: &[Text]) {
             .unwrap_or((100, 20));
         w
     };
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct Chapter {
-        book: Book,
-        chapter: u16,
-    }
-
-    impl Text {
-        fn chapter(&self) -> Chapter {
-            Chapter {
-                book: self.book,
-                chapter: self.chapter,
-            }
-        }
-    }
 
     let mut current: Option<Chapter> = None;
     let mut table = Table::new();
@@ -337,6 +243,7 @@ fn search_by_book_and_location(
     translation: Translation,
 ) -> tantivy::Result<Vec<Text>> {
     let mut buf = format!("/{}", book as u8);
+
     if let Some(location) = &location {
         let chapter = location.chapter;
         write!(buf, "/{chapter}").unwrap();
@@ -349,17 +256,21 @@ fn search_by_book_and_location(
         Term::from_facet(fields.location, &Facet::from(&buf)),
         IndexRecordOption::Basic,
     );
+
     let translation = TermQuery::new(
         Term::from_facet(fields.translation, &Facet::from(&format!("/{translation}"))),
         IndexRecordOption::Basic,
     );
+
     let query = BooleanQuery::intersection(vec![Box::new(location), Box::new(translation)]);
 
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
+
     let searcher = reader.searcher();
+
     // In this case, we don't actually want to limit the docs returned, and the number will be
     // small in most cases, but I have no idea what collector to use or how, so...
     let documents = searcher
@@ -445,7 +356,6 @@ fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
 fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
     // We want to store our data someplace sane, so we're gonna use the directories library to
     // decide where all this data goes.
-
     let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::Other,
@@ -461,10 +371,9 @@ fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
         std::fs::create_dir_all(&index_path)?;
     }
 
-    let schema = build_schema();
-    let fields = SearchFields::from_schema(&schema);
-
+    let (schema, fields) = build_schema();
     let index_dir = MmapDirectory::open(&index_path)?;
+
     if !tantivy::Index::exists(&index_dir)? {
         let index = Index::create_in_dir(index_path, schema)?;
 
@@ -472,7 +381,6 @@ fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
         const ARENA_SIZE: usize = 0x100000 * 500;
         write_index(Translation::Kjv, &fields, &mut index.writer(ARENA_SIZE)?)?;
         write_index(Translation::Asv, &fields, &mut index.writer(ARENA_SIZE)?)?;
-
         Ok((index, fields))
     } else {
         Ok((tantivy::Index::open(index_dir)?, fields))
@@ -508,16 +416,18 @@ fn write_index(
     Ok(())
 }
 
-fn build_schema() -> Schema {
+fn build_schema() -> (Schema, SearchFields) {
     use tantivy::schema;
 
     let facet_options = schema::INDEXED | schema::STORED;
-
     let mut builder = Schema::builder();
-    builder.add_facet_field("translation", facet_options.clone());
-    builder.add_facet_field("location", facet_options);
-    builder.add_text_field("content", schema::TEXT | schema::STORED);
-    builder.build()
+    let fields = SearchFields {
+        translation: builder.add_facet_field("translation", facet_options.clone()),
+        location: builder.add_facet_field("location", facet_options),
+        content: builder.add_text_field("content", schema::TEXT | schema::STORED),
+    };
+
+    (builder.build(), fields)
 }
 
 fn parse_verses_with_id(text: &str) -> impl Iterator<Item = (u64, &str)> {
