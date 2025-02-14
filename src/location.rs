@@ -1,6 +1,15 @@
-use std::{fmt, num::ParseIntError, str::FromStr};
+use std::{
+    fmt,
+    num::{NonZero, ParseIntError},
+    str::FromStr,
+};
 
 use crate::{book::Book, error::AbbrevStr};
+
+pub const AUSTIN_VERSE: Verse = Verse {
+    start: NonZero::new(16).unwrap(),
+    end: None,
+};
 
 /// Book, chapter and verse
 ///
@@ -27,7 +36,7 @@ impl Location {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartialLocation {
     pub chapter: u16,
-    pub verse: Option<u16>,
+    pub verse: Option<Verse>,
 }
 
 impl fmt::Display for PartialLocation {
@@ -44,35 +53,70 @@ impl FromStr for PartialLocation {
     type Err = ParseLocationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // I have just now decided that the way this has to be written is in the following format,
-        // at least until I start to refine the cli...
-
-        // psalms.23
-        // Romans.3:23
-        // john.3:16 -- see also Austin.3:16
-
         let (chapter, verse) = s.split_once(':').unwrap_or((s, ""));
-
-        // For right now, we're not going to check the book's name, because... well, whatever. We
-        // are gonna implement that later.
-
         let chapter = chapter
             .parse()
             .map_err(|e| ParseLocationError::chapter(chapter, e))?;
 
         if verse.is_empty() {
-            Ok(PartialLocation {
+            return Ok(PartialLocation {
                 chapter,
                 verse: None,
-            })
+            });
+        }
+
+        // The original version of this function was only concerned with parsing a chapter and
+        // verse, e.g. 3:16. It's not uncommon, however, for verses to be given as a range, e.g.
+        // 127:4-5. To support that will require a little more effort on my part...
+        Ok(PartialLocation {
+            chapter,
+            verse: Some(verse.parse()?),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Verse {
+    start: NonZero<u16>,
+    end: Option<NonZero<u16>>,
+}
+
+impl Verse {
+    pub fn contains(&self, verse: u16) -> bool {
+        let Some(verse) = NonZero::new(verse) else {
+            return false;
+        };
+
+        if let Some(end) = self.end {
+            verse >= self.start && verse <= end
         } else {
-            let verse: u16 = verse
-                .parse()
-                .map_err(|e| ParseLocationError::verse(verse, e))?;
-            Ok(PartialLocation {
-                chapter,
-                verse: Some(verse),
-            })
+            verse == self.start
+        }
+    }
+}
+
+impl fmt::Display for Verse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.end {
+            Some(end) => write!(f, "{}-{}", self.start, end),
+            None => self.start.fmt(f),
+        }
+    }
+}
+
+impl FromStr for Verse {
+    type Err = ParseLocationError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once('-') {
+            Some((start, end)) => Ok(Verse {
+                start: start.parse().map_err(|e| ParseLocationError::verse(s, e))?,
+                end: Some(end.parse().map_err(|e| ParseLocationError::verse(s, e))?),
+            }),
+            None => Ok(Verse {
+                start: s.parse().map_err(|e| ParseLocationError::verse(s, e))?,
+                end: None,
+            }),
         }
     }
 }

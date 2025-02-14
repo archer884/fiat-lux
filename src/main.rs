@@ -33,7 +33,7 @@ static KJV_DAT: &str = include_str!("../resource/kjv.dat");
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Clone, Debug, Parser)]
-#[clap(subcommand_negates_reqs(true))]
+#[command(subcommand_negates_reqs(true))]
 struct Args {
     #[clap(required = true)]
     book: Option<Book>,
@@ -52,7 +52,7 @@ enum Command {
     Search(SearchArgs),
 
     #[clap(hide(true))]
-    Austin { location: Option<PartialLocation> },
+    Austin { location: PartialLocation },
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -184,11 +184,9 @@ fn format_texts(texts: &[Text]) {
         let (w, h) = terminal_size::terminal_size()
             .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
             .unwrap_or((100, 20));
-
         if texts.len() > h as usize {
             pager::Pager::with_default_pager("bat").setup();
         }
-
         w
     };
 
@@ -227,10 +225,9 @@ fn format_texts(texts: &[Text]) {
         table.add_row(&[Cow::from(format!("{verse:4}")), Cow::from(content)]);
     }
 
-    table
-        .column_mut(0)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
+    if let Some(col) = table.column_mut(0) {
+        col.set_cell_alignment(CellAlignment::Right);
+    }
 
     println!("{table}");
 }
@@ -242,27 +239,32 @@ fn search_by_book_and_location(
     location: Option<PartialLocation>,
     translation: Translation,
 ) -> tantivy::Result<Vec<Text>> {
-    let mut buf = format!("/{}", book as u8);
+    // In the original version, we created a facet of the form /a/b?/c?, where a and b were book
+    // and chapter and c was the verse. In this version, we're going to go with /a/b? and leave
+    // c out entirely, because I doubt very seriously that losing the verse from search is going
+    // to do significant harm to performance AND because we'll be able to do ranges of verses more
+    // easily this way.
 
+    let mut buf = format!("/{}", book as u8);
     if let Some(location) = &location {
-        let chapter = location.chapter;
-        write!(buf, "/{chapter}").unwrap();
-        if let Some(verse) = location.verse {
-            write!(buf, "/{verse}").unwrap()
-        }
+        write!(buf, "/{}", location.chapter).unwrap();
     }
 
-    let location = TermQuery::new(
-        Term::from_facet(fields.location, &Facet::from(&buf)),
+    let location_facet = Facet::from(&buf);
+    let translation_facet = Facet::from(&format!("/{translation}"));
+
+    let location_query = TermQuery::new(
+        Term::from_facet(fields.location, &location_facet),
         IndexRecordOption::Basic,
     );
 
-    let translation = TermQuery::new(
-        Term::from_facet(fields.translation, &Facet::from(&format!("/{translation}"))),
+    let translation_query = TermQuery::new(
+        Term::from_facet(fields.translation, &translation_facet),
         IndexRecordOption::Basic,
     );
 
-    let query = BooleanQuery::intersection(vec![Box::new(location), Box::new(translation)]);
+    let query =
+        BooleanQuery::intersection(vec![Box::new(location_query), Box::new(translation_query)]);
 
     let reader = index
         .reader_builder()
@@ -283,6 +285,16 @@ fn search_by_book_and_location(
         texts.push(Text::from_document(document?, fields));
     }
     texts.sort();
+
+    // Now that we've got a set of verses to work with, IF the user has provided us a set of verses
+    // to return, we want to filter out any verses NOT included in the user's specification. Since
+    // the verses are already on a vec, I figure the easiest way to do this is just with a retain
+    // call.
+
+    if let Some(verse) = location.and_then(|x| x.verse) {
+        texts.retain(|text| verse.contains(text.verse));
+    }
+
     Ok(texts)
 }
 
@@ -296,15 +308,13 @@ fn dispatch(command: &Command, translation: Translation) -> Result<()> {
         // Also don't watch this video:
         // https://www.youtube.com/watch?v=tjWPoQWdmjg
         Command::Austin { location } => {
-            if let Some(location) = location {
-                let expected = PartialLocation {
-                    chapter: 3,
-                    verse: Some(16),
-                };
+            let expected = PartialLocation {
+                chapter: 3,
+                verse: Some(location::AUSTIN_VERSE),
+            };
 
-                if location == &expected {
-                    println!("Austin 3:16\nI just whipped your ass!");
-                }
+            if location == &expected {
+                println!("Austin 3:16\nI just whipped your ass!");
             }
 
             Ok(())
