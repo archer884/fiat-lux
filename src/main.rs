@@ -19,11 +19,11 @@ use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
 use search::SearchFields;
 use tantivy::{
+    Index, IndexWriter, ReloadPolicy, Term,
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
     schema::{Facet, IndexRecordOption, Schema},
-    Index, IndexWriter, ReloadPolicy, Term,
 };
 use text::{Chapter, Text};
 
@@ -51,7 +51,7 @@ enum Command {
     #[clap(alias = "s")]
     Search(SearchArgs),
 
-    #[clap(hide(true))]
+    #[clap(hide(true), alias = "Austin")]
     Austin { location: PartialLocation },
 }
 
