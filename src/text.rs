@@ -1,6 +1,5 @@
-use tantivy::{schema::Value, TantivyDocument as Document};
-
 use crate::{book::Book, search::SearchFields};
+use tantivy::{TantivyDocument as Document, schema::Value};
 
 #[derive(Clone, Debug)]
 pub struct Text {
@@ -12,12 +11,12 @@ pub struct Text {
 
 impl Text {
     pub fn from_document(document: Document, fields: &SearchFields) -> Self {
-        let location = document
+        let facet = document
             .get_first(fields.location)
-            .and_then(|x| Some(x.as_facet()?.to_string()))
+            .and_then(|x| x.as_facet())
             .unwrap();
 
-        let mut segments = location.trim_start_matches('/').split('/');
+        let mut segments = facet.split('\0');
 
         let book = segments.next().unwrap().parse::<u8>().unwrap().into();
         let chapter = segments.next().unwrap().parse().unwrap();

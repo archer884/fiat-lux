@@ -366,12 +366,8 @@ fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
 fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
     // We want to store our data someplace sane, so we're gonna use the directories library to
     // decide where all this data goes.
-    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            "unable to initialize project directory",
-        )
-    })?;
+    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App")
+        .ok_or_else(|| io::Error::other("unable to initialize project directory"))?;
 
     // Well need to ensure the directory exists. That's easy, but I'm not sure how to know if
     // there is an existing index in an existing directory. That seems important.
