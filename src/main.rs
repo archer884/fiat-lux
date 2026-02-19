@@ -1,6 +1,7 @@
 mod book;
 mod error;
 mod location;
+mod reference;
 mod search;
 mod text;
 
@@ -17,13 +18,14 @@ use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
+use reference::ReferenceProvider;
 use search::SearchFields;
 use tantivy::{
-    Index, IndexWriter, ReloadPolicy, Term,
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
     schema::{Facet, IndexRecordOption, Schema},
+    Index, IndexWriter, ReloadPolicy, Term,
 };
 use text::{Chapter, Text};
 
@@ -41,6 +43,9 @@ struct Args {
 
     #[clap(flatten)]
     translation: TranslationArgs,
+
+    #[clap(long, env = "FIAT_LUX_REFERENCE", default_value_t)]
+    reference: ReferenceProvider,
 
     #[clap(subcommand)]
     command: Option<Command>,
@@ -146,6 +151,8 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<()> {
+    let reference = args.reference.get();
+
     if let Some(command) = &args.command {
         return dispatch(command, args.translation.into());
     }
@@ -170,7 +177,13 @@ fn run(args: &Args) -> Result<()> {
         let width =
             terminal_size::terminal_size().map_or(100, |(terminal_size::Width(w), _)| w.min(100));
         let content = textwrap::fill(&content, usize::from(width));
-        println!("{book} {chapter}:{verse}\n{content}");
+        let location = Location {
+            book,
+            chapter,
+            verse,
+        };
+        let url = reference.url(&location, args.translation.into());
+        println!("{book} {chapter}:{verse}\n{content}\n{url}");
     } else {
         format_texts(&texts);
     }
