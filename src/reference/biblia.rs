@@ -1,15 +1,26 @@
-use super::Reference;
-use crate::{book::Book, location::Location, Translation};
+use super::{Reference, ReferenceLocator};
+use crate::{book::Book, Translation};
 
 pub struct Biblia;
 
 impl Reference for Biblia {
-    fn url(&self, location: &Location, translation: Translation) -> String {
-        let book_slug = book_slug(location.book);
-        format!(
-            "https://biblia.com/bible/{}/{}/{}/{}",
-            translation, book_slug, location.chapter, location.verse
-        )
+    fn url(&self, location: &dyn ReferenceLocator, translation: Translation) -> String {
+        let book_slug = book_slug(location.book());
+        match location.verse() {
+            None => format!(
+                "https://biblia.com/bible/{}/{}/{}",
+                translation,
+                book_slug,
+                location.chapter()
+            ),
+            Some(verse) => format!(
+                "https://biblia.com/bible/{}/{}/{}/{}",
+                translation,
+                book_slug,
+                location.chapter(),
+                verse
+            ),
+        }
     }
 }
 
