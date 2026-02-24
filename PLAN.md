@@ -9,13 +9,3 @@ perform a full-text search of the text of the Bible; and it can display those
 verses which are determined to be most relevant to the user's queries.
 
 The application is written in idiomatic Rust.
-
-## Intended enhancement
-
-Currently, we would like to supplement the program's output with a LINK to an
-online Bible service for every verse that appears in the output, or for any
-passage requested explicitly by the user.
-
-The addition of this feature should have NO impact on existing features, and
-the new feature should be added in such a way as to allow the inclusion of
-additional online Bible providers in the future.
