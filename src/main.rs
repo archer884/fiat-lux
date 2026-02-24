@@ -38,17 +38,17 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Clone, Debug, Parser)]
 #[command(subcommand_negates_reqs(true))]
 struct Args {
-    #[clap(required = true)]
+    #[arg(required = true)]
     book: Option<Book>,
     location: Option<PartialLocation>,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     translation: TranslationArgs,
 
-    #[clap(long, env = "FIAT_LUX_REFERENCE", default_value_t)]
+    #[arg(long, env = "FIAT_LUX_REFERENCE", default_value_t)]
     reference: ReferenceProvider,
 
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Option<Command>,
 }
 
