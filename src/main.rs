@@ -1,6 +1,7 @@
 mod book;
 mod error;
 mod location;
+mod reference;
 mod search;
 mod text;
 
@@ -11,19 +12,21 @@ use std::{
     str::FromStr,
 };
 
+use crate::reference::Reference;
 use book::Book;
 use clap::{Parser, Subcommand};
 use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
 use location::{Location, PartialLocation};
+use reference::ReferenceProvider;
 use search::SearchFields;
 use tantivy::{
-    Index, IndexWriter, ReloadPolicy, Term,
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
     schema::{Facet, IndexRecordOption, Schema},
+    Index, IndexWriter, ReloadPolicy, Term,
 };
 use text::{Chapter, Text};
 
@@ -35,14 +38,17 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Clone, Debug, Parser)]
 #[command(subcommand_negates_reqs(true))]
 struct Args {
-    #[clap(required = true)]
+    #[arg(required = true)]
     book: Option<Book>,
     location: Option<PartialLocation>,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     translation: TranslationArgs,
 
-    #[clap(subcommand)]
+    #[arg(long, env = "FIAT_LUX_REFERENCE", default_value_t)]
+    reference: ReferenceProvider,
+
+    #[command(subcommand)]
     command: Option<Command>,
 }
 
@@ -146,8 +152,10 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<()> {
+    let reference = args.reference.get();
+
     if let Some(command) = &args.command {
-        return dispatch(command, args.translation.into());
+        return dispatch(command, args.translation.into(), &*reference);
     }
 
     let book = args.book.expect("unreachable");
@@ -170,15 +178,21 @@ fn run(args: &Args) -> Result<()> {
         let width =
             terminal_size::terminal_size().map_or(100, |(terminal_size::Width(w), _)| w.min(100));
         let content = textwrap::fill(&content, usize::from(width));
-        println!("{book} {chapter}:{verse}\n{content}");
+        let location = Location {
+            book,
+            chapter,
+            verse,
+        };
+        let url = reference.url(&location, args.translation.into());
+        println!("{book} {chapter}:{verse}\n{content}\n{url}");
     } else {
-        format_texts(&texts);
+        format_texts(&texts, &*reference, args.translation.into());
     }
 
     Ok(())
 }
 
-fn format_texts(texts: &[Text]) {
+fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translation) {
     #[cfg(feature = "pager")]
     let width = {
         let (w, h) = terminal_size::terminal_size()
@@ -200,17 +214,14 @@ fn format_texts(texts: &[Text]) {
 
     let mut current: Option<Chapter> = None;
     let mut table = Table::new();
+    let mut section_verse_count = 0;
 
     table.set_content_arrangement(ContentArrangement::DynamicFullWidth);
     table.load_preset(comfy_table::presets::NOTHING);
     table.set_width(width.min(100));
 
     for text in texts {
-        if current.is_none()
-            || !current
-                .map(|chapter| chapter == text.chapter())
-                .unwrap_or_default()
-        {
+        if current.is_none() {
             let next = text.chapter();
             let Chapter { book, chapter } = next;
             current = Some(next);
@@ -218,11 +229,43 @@ fn format_texts(texts: &[Text]) {
                 Cell::new(""),
                 Cell::new(format!("\n{book} {chapter}")).add_attribute(Attribute::Bold),
             ]);
+        } else if !current
+            .map(|chapter| chapter == text.chapter())
+            .unwrap_or_default()
+        {
+            append_reference(
+                reference,
+                translation,
+                &mut table,
+                text,
+                section_verse_count > 1,
+            );
+
+            let next = text.chapter();
+            let Chapter { book, chapter } = next;
+            current = Some(next);
+            table.add_row(vec![
+                Cell::new(""),
+                Cell::new(format!("\n{book} {chapter}")).add_attribute(Attribute::Bold),
+            ]);
+
+            section_verse_count = 0;
         }
 
         let verse = text.verse;
         let content = &text.content;
+        section_verse_count += 1;
         table.add_row(&[Cow::from(format!("{verse:4}")), Cow::from(content)]);
+    }
+
+    if let Some(text) = texts.last() {
+        append_reference(
+            reference,
+            translation,
+            &mut table,
+            text,
+            section_verse_count > 1,
+        );
     }
 
     if let Some(col) = table.column_mut(0) {
@@ -230,6 +273,28 @@ fn format_texts(texts: &[Text]) {
     }
 
     println!("{table}");
+}
+
+fn append_reference(
+    reference: &dyn Reference,
+    translation: Translation,
+    table: &mut Table,
+    text: &Text,
+    has_multiple_verses: bool,
+) {
+    // In the event we've emitted multiple verses in this "section," we need to only emit
+    // a chapter link -- NOT a full verse link.
+    if has_multiple_verses {
+        table.add_row(vec![
+            Cell::new(""),
+            Cell::new(reference.url(&text.chapter(), translation)),
+        ]);
+    } else {
+        table.add_row(vec![
+            Cell::new(""),
+            Cell::new(reference.url(&text, translation)),
+        ]);
+    }
 }
 
 fn search_by_book_and_location(
@@ -298,11 +363,11 @@ fn search_by_book_and_location(
     Ok(texts)
 }
 
-fn dispatch(command: &Command, translation: Translation) -> Result<()> {
+fn dispatch(command: &Command, translation: Translation, reference: &dyn Reference) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search(args) => search(args, translation),
+        Command::Search(args) => search(args, translation, reference),
 
         // This code does not exist. Do not read this code.
         // Also don't watch this video:
@@ -322,7 +387,7 @@ fn dispatch(command: &Command, translation: Translation) -> Result<()> {
     }
 }
 
-fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
+fn search(args: &SearchArgs, translation: Translation, reference: &dyn Reference) -> Result<()> {
     let (index, fields) = initialize_search()?;
 
     let reader = index
@@ -358,7 +423,7 @@ fn search(args: &SearchArgs, translation: Translation) -> Result<()> {
         .collect();
 
     texts.sort();
-    format_texts(&texts);
+    format_texts(&texts, reference, translation);
 
     Ok(())
 }
