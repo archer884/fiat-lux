@@ -12,23 +12,24 @@ use std::{
     str::FromStr,
 };
 
-use crate::reference::Reference;
 use book::Book;
 use clap::{Parser, Subcommand};
 use comfy_table::{Attribute, Cell, CellAlignment, ContentArrangement, Table};
 use directories::ProjectDirs;
 use error::{AbbrevStr, Error};
+use indexmap::IndexMap;
 use location::{Location, PartialLocation};
+use reference::Reference;
 use reference::ReferenceProvider;
 use search::SearchFields;
 use tantivy::{
+    Index, IndexWriter, ReloadPolicy, Term,
     collector::TopDocs,
     directory::MmapDirectory,
     query::{BooleanQuery, QueryParser, TermQuery},
     schema::{Facet, IndexRecordOption, Schema},
-    Index, IndexWriter, ReloadPolicy, Term,
 };
-use text::{Chapter, Text};
+use text::Text;
 
 static ASV_DAT: &str = include_str!("../resource/asv.dat");
 static KJV_DAT: &str = include_str!("../resource/kjv.dat");
@@ -212,60 +213,54 @@ fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translat
         w
     };
 
-    let mut current: Option<Chapter> = None;
+    // We need to group verses by book and chapter without scrambling their order. The accepted
+    // means for accomplishing this appears to be either ordermap or indexmap. I'm going with the
+    // latter because the documentation *says* that ordermap provides stronger ordering guarantees,
+    // and I'm pretty sure I don't need them to be that strong. (I'm not removing any items.)
+
+    let mut groups = IndexMap::new();
+    for text in texts {
+        groups
+            .entry(text.chapter())
+            .and_modify(|x: &mut Vec<_>| x.push(text))
+            .or_insert(vec![text]);
+    }
+
     let mut table = Table::new();
-    let mut section_verse_count = 0;
 
     table.set_content_arrangement(ContentArrangement::DynamicFullWidth);
     table.load_preset(comfy_table::presets::NOTHING);
     table.set_width(width.min(100));
 
-    for text in texts {
-        if current.is_none() {
-            let next = text.chapter();
-            let Chapter { book, chapter } = next;
-            current = Some(next);
-            table.add_row(vec![
-                Cell::new(""),
-                Cell::new(format!("\n{book} {chapter}")).add_attribute(Attribute::Bold),
-            ]);
-        } else if !current
-            .map(|chapter| chapter == text.chapter())
-            .unwrap_or_default()
-        {
-            append_reference(
-                reference,
-                translation,
-                &mut table,
-                text,
-                section_verse_count > 1,
-            );
+    // Now we have each verse grouped with other verses in the same book and chapter, and we can
+    // easily print one link per group rather than attempting to infer link placement on the basis
+    // of which chapter heading we read last.
 
-            let next = text.chapter();
-            let Chapter { book, chapter } = next;
-            current = Some(next);
-            table.add_row(vec![
-                Cell::new(""),
-                Cell::new(format!("\n{book} {chapter}")).add_attribute(Attribute::Bold),
-            ]);
+    for (loc, verses) in groups {
+        table.add_row(vec![
+            Cell::new(""),
+            Cell::new(format!("\n{} {}", loc.book, loc.chapter)).add_attribute(Attribute::Bold),
+        ]);
 
-            section_verse_count = 0;
+        for verse in &verses {
+            let Text { verse, content, .. } = verse;
+            table.add_row(&[Cow::from(format!("{verse:4}")), Cow::from(content)]);
         }
 
-        let verse = text.verse;
-        let content = &text.content;
-        section_verse_count += 1;
-        table.add_row(&[Cow::from(format!("{verse:4}")), Cow::from(content)]);
-    }
+        // The last thing we need to do is to append a reference here for the preceding verse or
+        // verses.
 
-    if let Some(text) = texts.last() {
-        append_reference(
-            reference,
-            translation,
-            &mut table,
-            text,
-            section_verse_count > 1,
-        );
+        if let &[verse] = verses.as_slice() {
+            table.add_row(vec![
+                Cell::new(""),
+                Cell::new(reference.url(&verse, translation)),
+            ]);
+        } else {
+            table.add_row(vec![
+                Cell::new(""),
+                Cell::new(reference.url(&loc, translation)),
+            ]);
+        }
     }
 
     if let Some(col) = table.column_mut(0) {
@@ -273,28 +268,6 @@ fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translat
     }
 
     println!("{table}");
-}
-
-fn append_reference(
-    reference: &dyn Reference,
-    translation: Translation,
-    table: &mut Table,
-    text: &Text,
-    has_multiple_verses: bool,
-) {
-    // In the event we've emitted multiple verses in this "section," we need to only emit
-    // a chapter link -- NOT a full verse link.
-    if has_multiple_verses {
-        table.add_row(vec![
-            Cell::new(""),
-            Cell::new(reference.url(&text.chapter(), translation)),
-        ]);
-    } else {
-        table.add_row(vec![
-            Cell::new(""),
-            Cell::new(reference.url(&text, translation)),
-        ]);
-    }
 }
 
 fn search_by_book_and_location(

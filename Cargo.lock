@@ -457,11 +457,12 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fiat-lux"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "clap",
  "comfy-table",
  "directories",
+ "indexmap",
  "pager",
  "regex",
  "tantivy",

@@ -68,7 +68,7 @@ impl PartialOrd for Text {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Chapter {
     pub book: Book,
     pub chapter: u16,
