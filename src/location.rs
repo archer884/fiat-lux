@@ -109,10 +109,22 @@ impl FromStr for Verse {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.split_once('-') {
-            Some((start, end)) => Ok(Verse {
-                start: start.parse().map_err(|e| ParseLocationError::verse(s, e))?,
-                end: Some(end.parse().map_err(|e| ParseLocationError::verse(s, e))?),
-            }),
+            Some((start, end)) => {
+                let start = start.parse().map_err(|e| ParseLocationError::verse(s, e))?;
+                let end = end.parse().map_err(|e| ParseLocationError::verse(s, e))?;
+
+                // Bible verses are always cited in ascending order; a reversed
+                // range is invariably a typo, so reject it rather than silently
+                // matching nothing.
+                if end < start {
+                    return Err(ParseLocationError::Range { start, end });
+                }
+
+                Ok(Verse {
+                    start,
+                    end: Some(end),
+                })
+            }
             None => Ok(Verse {
                 start: s.parse().map_err(|e| ParseLocationError::verse(s, e))?,
                 end: None,
@@ -128,6 +140,12 @@ pub enum ParseLocationError {
 
     #[error("unable to parse verse: {text}")]
     Verse { text: String, cause: ParseIntError },
+
+    #[error("verse range end {end} precedes start {start}")]
+    Range {
+        start: NonZero<u16>,
+        end: NonZero<u16>,
+    },
 }
 
 impl ParseLocationError {
@@ -143,5 +161,40 @@ impl ParseLocationError {
             text: text.get(10),
             cause,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verse_single() {
+        let v: Verse = "16".parse().unwrap();
+        assert_eq!(v.start, NonZero::new(16).unwrap());
+        assert_eq!(v.end, None);
+    }
+
+    #[test]
+    fn verse_ascending_range() {
+        let v: Verse = "16-18".parse().unwrap();
+        assert_eq!(v.start, NonZero::new(16).unwrap());
+        assert_eq!(v.end, Some(NonZero::new(18).unwrap()));
+    }
+
+    #[test]
+    fn verse_degenerate_range_is_allowed() {
+        // Redundant but not wrong: a range whose endpoints coincide.
+        let v: Verse = "16-16".parse().unwrap();
+        assert_eq!(v.start, v.end.unwrap());
+    }
+
+    #[test]
+    fn verse_reversed_range_is_rejected() {
+        let err = "18-16".parse::<Verse>().unwrap_err();
+        assert!(matches!(
+            err,
+            ParseLocationError::Range { start, end } if start.get() == 18 && end.get() == 16
+        ));
     }
 }
