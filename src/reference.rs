@@ -2,10 +2,10 @@ mod biblia;
 
 pub use biblia::Biblia;
 
+use crate::Translation;
 use crate::book::Book;
 use crate::location::Location;
 use crate::text::{Chapter, Text};
-use crate::Translation;
 use clap::ValueEnum;
 use std::fmt;
 

@@ -1,5 +1,5 @@
 use super::{Reference, ReferenceLocator};
-use crate::{book::Book, Translation};
+use crate::{Translation, book::Book};
 
 pub struct Biblia;
 

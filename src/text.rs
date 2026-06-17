@@ -1,5 +1,5 @@
 use crate::{book::Book, search::SearchFields};
-use tantivy::{schema::Value, TantivyDocument as Document};
+use tantivy::{TantivyDocument as Document, schema::Value};
 
 #[derive(Clone, Debug)]
 pub struct Text {
