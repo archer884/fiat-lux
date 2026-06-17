@@ -83,7 +83,8 @@ See `Location::from_id` and `parse_verses_with_id`.
   a mismatch also triggers a rebuild. For non-schema format changes (e.g.
   facet path encoding in `write_index`), bump `INDEX_FORMAT_SALT`.
 - Note: `text.rs::from_document` parses the location facet back out by
-  splitting on `'\0'` — tantivy serializes facet segments separated by NUL.
+  round-tripping the encoded string through `Facet::from_encoded` and calling
+  `to_path()`, rather than depending on the internal NUL separator.
 
 ## Conventions
 

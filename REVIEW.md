@@ -4,14 +4,6 @@ Ordered by severity.
 
 ## Robustness
 
-**4. `text.rs::from_document` relies on tantivy's internal facet encoding** — `text.rs:19`
-
-```rust
-let mut segments = facet.split('\0');
-```
-
-This depends on tantivy serializing facet segments as NUL-separated bytes rather than using the public `Facet::to_path()` API, which returns `Vec<&str>` directly. A tantivy version bump could change this silently. Prefer `facet.to_path()` and index into the returned `Vec`.
-
 **5. `parse_verses_with_id` indexes by byte offset** — `main.rs:479`
 
 ```rust
