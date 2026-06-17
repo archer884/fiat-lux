@@ -13,14 +13,14 @@ Offline terminal-accessible Bible.
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.60", features = ["derive", "wrap_help", "env"] }
+clap = { version = "4.6.1", features = ["derive", "wrap_help", "env"] }
 comfy-table = "7.2.2"
 directories = "6.0.0"
-indexmap = "2.13.0"
+indexmap = "2.14.0"
 pager = { version = "0.16.1", optional = true }
-regex = "1.12.3"
-tantivy = "0.25.0"
-terminal_size = "0.4.3"
+regex = "1.12.4"
+tantivy = "0.26.1"
+terminal_size = "0.4.4"
 textwrap = { version = "0.16.2", features = ["hyphenation"] }
 thiserror = "2.0.18"
 unicode-width = "0.2"

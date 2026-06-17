@@ -322,7 +322,7 @@ fn search_by_book_and_location(
     // In this case, we don't actually want to limit the docs returned, and the number will be
     // small in most cases, but I have no idea what collector to use or how, so...
     let documents = searcher
-        .search(&query, &TopDocs::with_limit(10_000))?
+        .search(&query, &TopDocs::with_limit(10_000).order_by_score())?
         .into_iter()
         .map(|(_, candidate)| searcher.doc(candidate));
 
@@ -396,7 +396,7 @@ fn search(args: &SearchArgs, translation: Translation, reference: &dyn Reference
     let mut texts: Vec<_> = searcher
         .search(
             &combined_query,
-            &TopDocs::with_limit(args.limit.unwrap_or(10)),
+            &TopDocs::with_limit(args.limit.unwrap_or(10)).order_by_score(),
         )?
         .into_iter()
         .filter_map(|(_, address)| searcher.doc(address).ok())
