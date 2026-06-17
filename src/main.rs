@@ -50,6 +50,11 @@ struct Args {
     #[arg(long, env = "FIAT_LUX_REFERENCE", default_value_t)]
     reference: ReferenceProvider,
 
+    /// Memory budget for the index writer during index creation (e.g. "500MB", "2GB").
+    /// Only applies when the index is being built; subsequent runs just open the existing index.
+    #[arg(long, env = "FIAT_LUX_INDEX_MEMORY")]
+    index_memory: Option<ByteSize>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -58,6 +63,13 @@ struct Args {
 enum Command {
     #[clap(alias = "s")]
     Search(SearchArgs),
+
+    /// Build the search index.
+    CreateIndex {
+        /// Overwrite an existing index.
+        #[arg(long)]
+        force: bool,
+    },
 
     #[clap(hide(true), alias = "Austin")]
     Austin { location: PartialLocation },
@@ -145,23 +157,64 @@ impl ParseTranslationError {
     }
 }
 
+/// A memory size parsed from a human-friendly string like `"500MB"` or `"2GB"`.
+#[derive(Clone, Copy, Debug)]
+struct ByteSize(usize);
+
+impl FromStr for ByteSize {
+    type Err = ParseByteSizeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        let (num, suffix) = s.split_at(split);
+        let num: usize = num.parse().map_err(|_| ParseByteSizeError)?;
+        let multiplier = match suffix.trim().to_ascii_uppercase().as_str() {
+            "" | "B" => 1,
+            "K" | "KB" => 1024,
+            "M" | "MB" => 1024 * 1024,
+            "G" | "GB" => 1024 * 1024 * 1024,
+            _ => return Err(ParseByteSizeError),
+        };
+        num.checked_mul(multiplier)
+            .map(ByteSize)
+            .ok_or(ParseByteSizeError)
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("expected a number with an optional KB/MB/GB suffix, e.g. '500MB' or '2GB'")]
+struct ParseByteSizeError;
+
+fn default_arena_size() -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // 100MB per thread (tantivy caps at 8 threads), floored at 500MB.
+    (cpus * 100 * 1024 * 1024).max(500 * 1024 * 1024)
+}
+
 fn main() {
     let args = Args::parse();
-    if let Err(e) = run(&args) {
+    let arena_size = args
+        .index_memory
+        .map(|b| b.0)
+        .unwrap_or_else(default_arena_size);
+    if let Err(e) = run(&args, arena_size) {
         eprintln!("{e}");
         std::process::exit(1);
     }
 }
 
-fn run(args: &Args) -> Result<()> {
+fn run(args: &Args, arena_size: usize) -> Result<()> {
     let reference = args.reference.get();
 
     if let Some(command) = &args.command {
-        return dispatch(command, args.translation.into(), &*reference);
+        return dispatch(command, args.translation.into(), &*reference, arena_size);
     }
 
     let book = args.book.expect("unreachable");
-    let (index, fields) = initialize_search()?;
+    let (index, fields) = initialize_search(arena_size)?;
     let texts = search_by_book_and_location(
         &index,
         &fields,
@@ -202,24 +255,9 @@ fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translat
         return;
     }
 
-    #[cfg(feature = "pager")]
-    let width = {
-        let (w, h) = terminal_size::terminal_size()
-            .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-            .unwrap_or((100, 20));
-        if texts.len() > h as usize {
-            pager::Pager::with_default_pager("bat").setup();
-        }
-        w
-    };
-
-    #[cfg(not(feature = "pager"))]
-    let width = {
-        let (w, _h) = terminal_size::terminal_size()
-            .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
-            .unwrap_or((100, 20));
-        w
-    };
+    let (width, _height) = terminal_size::terminal_size()
+        .map(|(terminal_size::Width(w), terminal_size::Height(h))| (w, h))
+        .unwrap_or((100, 20));
 
     // We need to group verses by book and chapter without scrambling their order. The accepted
     // means for accomplishing this appears to be either ordermap or indexmap. I'm going with the
@@ -275,7 +313,16 @@ fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translat
         col.set_cell_alignment(CellAlignment::Right);
     }
 
-    println!("{table}");
+    // Render before deciding on the pager so we can compare the *actual* output
+    // height against the terminal, rather than guessing from the verse count.
+    let output = table.to_string();
+
+    #[cfg(feature = "pager")]
+    if output.lines().count() > _height as usize {
+        pager::Pager::with_pager("bat --style=plain --paging=always").setup();
+    }
+
+    println!("{output}");
 }
 
 fn search_by_book_and_location(
@@ -318,9 +365,6 @@ fn search_by_book_and_location(
         .try_into()?;
 
     let searcher = reader.searcher();
-
-    // In this case, we don't actually want to limit the docs returned, and the number will be
-    // small in most cases, but I have no idea what collector to use or how, so...
     let documents = searcher
         .search(&query, &TopDocs::with_limit(10_000).order_by_score())?
         .into_iter()
@@ -344,11 +388,18 @@ fn search_by_book_and_location(
     Ok(texts)
 }
 
-fn dispatch(command: &Command, translation: Translation, reference: &dyn Reference) -> Result<()> {
+fn dispatch(
+    command: &Command,
+    translation: Translation,
+    reference: &dyn Reference,
+    arena_size: usize,
+) -> Result<()> {
     match command {
         // It is not obvious to me that a search should be performed against a given translation
         // rather than all translations, but we can revisit this later.
-        Command::Search(args) => search(args, translation, reference),
+        Command::Search(args) => search(args, translation, reference, arena_size),
+
+        Command::CreateIndex { force } => create_index_command(*force, arena_size),
 
         // This code does not exist. Do not read this code.
         // Also don't watch this video:
@@ -368,8 +419,13 @@ fn dispatch(command: &Command, translation: Translation, reference: &dyn Referen
     }
 }
 
-fn search(args: &SearchArgs, translation: Translation, reference: &dyn Reference) -> Result<()> {
-    let (index, fields) = initialize_search()?;
+fn search(
+    args: &SearchArgs,
+    translation: Translation,
+    reference: &dyn Reference,
+    arena_size: usize,
+) -> Result<()> {
+    let (index, fields) = initialize_search(arena_size)?;
 
     let reader = index
         .reader_builder()
@@ -409,6 +465,39 @@ fn search(args: &SearchArgs, translation: Translation, reference: &dyn Reference
     Ok(())
 }
 
+fn create_index_command(force: bool, arena_size: usize) -> Result<()> {
+    let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App")
+        .ok_or_else(|| io::Error::other("unable to initialize project directory"))?;
+
+    let index_path = dirs.data_dir().join("bible_idx");
+    if !index_path.exists() {
+        std::fs::create_dir_all(&index_path)?;
+    }
+
+    let index_exists = tantivy::Index::exists(&MmapDirectory::open(&index_path)?)?;
+
+    if index_exists && !force {
+        println!("Index already exists. Use --force to rebuild.");
+        return Ok(());
+    }
+
+    if index_exists {
+        std::fs::remove_dir_all(&index_path)?;
+        std::fs::create_dir_all(&index_path)?;
+    }
+
+    let (schema, fields) = build_schema();
+    let fingerprint = schema_fingerprint(&schema);
+
+    let sw = chronograf::start();
+    create_index(&index_path, schema, &fields, fingerprint, arena_size)?;
+    let elapsed = sw.finish();
+
+    println!("Index created in {:.2}s", elapsed.as_secs_f64());
+
+    Ok(())
+}
+
 /// Computes a fingerprint of the schema so that *any* change to the field
 /// layout (name, type, or options) automatically invalidates stale indexes.
 ///
@@ -434,7 +523,7 @@ fn schema_fingerprint(schema: &Schema) -> u64 {
     hasher.finish()
 }
 
-fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
+fn initialize_search(arena_size: usize) -> tantivy::Result<(Index, SearchFields)> {
     // We want to store our data someplace sane, so we're gonna use the directories library to
     // decide where all this data goes.
     let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App")
@@ -455,20 +544,21 @@ fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
 
     if !tantivy::Index::exists(&index_dir)? {
         // No index on disk yet — build everything from scratch.
-        return create_index(&index_path, schema, &fields, fingerprint);
+        return create_index(&index_path, schema, &fields, fingerprint, arena_size);
     }
 
     // An index exists. Rebuild unless the sentinel matches the current schema
     // fingerprint. A missing sentinel means the index predates versioning and
     // can't be trusted to be compatible; a mismatch means the schema has changed.
-    let compatible =
-        std::fs::read_to_string(&sentinel).ok().and_then(|s| s.trim().parse::<u64>().ok())
-            == Some(fingerprint);
+    let compatible = std::fs::read_to_string(&sentinel)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        == Some(fingerprint);
 
     if !compatible {
         std::fs::remove_dir_all(&index_path)?;
         std::fs::create_dir_all(&index_path)?;
-        return create_index(&index_path, schema, &fields, fingerprint);
+        return create_index(&index_path, schema, &fields, fingerprint, arena_size);
     }
 
     Ok((tantivy::Index::open(index_dir)?, fields))
@@ -479,13 +569,16 @@ fn create_index(
     schema: Schema,
     fields: &SearchFields,
     fingerprint: u64,
+    arena_size: usize,
 ) -> tantivy::Result<(Index, SearchFields)> {
     let index = Index::create_in_dir(index_path, schema)?;
 
-    /// 500 megabytes
-    const ARENA_SIZE: usize = 0x100000 * 500;
-    write_index(Translation::Kjv, fields, &mut index.writer(ARENA_SIZE)?)?;
-    write_index(Translation::Asv, fields, &mut index.writer(ARENA_SIZE)?)?;
+    // A single writer for both translations means a single commit and fewer
+    // segments than two separate writer sessions.
+    let mut writer = index.writer(arena_size)?;
+    write_index(Translation::Kjv, fields, &mut writer)?;
+    write_index(Translation::Asv, fields, &mut writer)?;
+    writer.commit()?;
 
     // Stamp the index with the current schema fingerprint so future runs can
     // tell whether the on-disk format is still compatible.
@@ -524,7 +617,6 @@ fn write_index(
         ))?;
     }
 
-    writer.commit()?;
     Ok(())
 }
 
@@ -543,6 +635,8 @@ fn build_schema() -> (Schema, SearchFields) {
 }
 
 fn parse_verses_with_id(text: &str) -> impl Iterator<Item = (u64, &str)> {
-    text.lines()
-        .filter_map(|line| line[..8].parse::<u64>().ok().map(|id| (id, &line[9..])))
+    text.lines().filter_map(|line| {
+        let id = line.get(..8)?.parse::<u64>().ok()?;
+        Some((id, line.get(9..)?))
+    })
 }

@@ -1,5 +1,8 @@
 use crate::{book::Book, search::SearchFields};
-use tantivy::{TantivyDocument as Document, schema::{Facet, Value}};
+use tantivy::{
+    TantivyDocument as Document,
+    schema::{Facet, Value},
+};
 
 #[derive(Clone, Debug)]
 pub struct Text {
@@ -51,6 +54,12 @@ impl Text {
 
 impl Eq for Text {}
 
+// A note regarding Eq and Ord:
+//
+// We implement these by hand because the actual text content of a verse isn't as important, for
+// the purposes of comparison, as the chapter and verse. We want a given chapter and verse from
+// translation A to be considered as equal to a given chapter and verse from translation B even
+// though the CONTENT of the two verses won't be equal.
 impl PartialEq for Text {
     fn eq(&self, other: &Self) -> bool {
         self.book == other.book && self.chapter == other.chapter && self.verse == other.verse

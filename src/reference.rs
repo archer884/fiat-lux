@@ -73,18 +73,16 @@ impl ReferenceProvider {
             Self::Biblia => "biblia",
         }
     }
+
+    pub fn get(&self) -> Box<dyn Reference> {
+        match self {
+            ReferenceProvider::Biblia => Box::new(Biblia),
+        }
+    }
 }
 
 impl fmt::Display for ReferenceProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.short_name())
-    }
-}
-
-impl ReferenceProvider {
-    pub fn get(&self) -> Box<dyn Reference> {
-        match self {
-            ReferenceProvider::Biblia => Box::new(Biblia),
-        }
     }
 }
