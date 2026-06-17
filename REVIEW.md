@@ -2,18 +2,6 @@
 
 Ordered by severity.
 
-## Robustness
-
-**5. `parse_verses_with_id` indexes by byte offset** — `main.rs:479`
-
-```rust
-line[..8].parse::<u64>()... &line[9..]
-```
-
-Assumes every line is ≥9 bytes with a tab at index 8. Safe today because the `.dat` files are bundled at compile time, but a malformed line would panic. Low risk given controlled data, but a `.filter(|l| l.len() >= 9)` guard or `split_once('\t')` would be more robust.
-
-> Note: "fixing" this would incur a significant performance hit, and it's not a bug; it's a deliberate decision re: the nature of our data.
-
 ## Minor / style
 
 **7. Duplicated width logic** — `main.rs:197-214`
@@ -35,7 +23,3 @@ The `#[cfg(feature = "pager")]` and `#[cfg(not(...))]` branches duplicate the `t
 - `AbbrevStr` is a nice UX touch (modulo the byte-slice bug).
 - `Verse::contains` correctly handles both single verses and ranges with `NonZero`.
 - Error flow through `thiserror` + `Error` is idiomatic.
-
----
-
-The highest-impact fix is **#1** (the panic) — it's directly reachable from CLI input.
