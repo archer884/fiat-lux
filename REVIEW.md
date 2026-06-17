@@ -20,10 +20,6 @@ line[..8].parse::<u64>()... &line[9..]
 
 Assumes every line is ≥9 bytes with a tab at index 8. Safe today because the `.dat` files are bundled at compile time, but a malformed line would panic. Low risk given controlled data, but a `.filter(|l| l.len() >= 9)` guard or `split_once('\t')` would be more robust.
 
-**6. No index schema versioning** — `main.rs:404`
-
-`initialize_search` checks `Index::exists` but not whether the on-disk schema matches `build_schema()`. If the schema ever changes, reopening a stale index will fail at query time with a confusing tantivy error rather than rebuilding. A version sentinel (e.g. a `meta.json` in the index dir) would make future migrations clean.
-
 ## Minor / style
 
 **7. Duplicated width logic** — `main.rs:197-214`

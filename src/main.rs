@@ -9,6 +9,7 @@ use std::{
     borrow::Cow,
     fmt::{self, Write},
     io,
+    path::Path,
     str::FromStr,
 };
 
@@ -408,13 +409,38 @@ fn search(args: &SearchArgs, translation: Translation, reference: &dyn Reference
     Ok(())
 }
 
+/// Computes a fingerprint of the schema so that *any* change to the field
+/// layout (name, type, or options) automatically invalidates stale indexes.
+///
+/// This is derived from the `Schema` object itself rather than a
+/// hand-maintained version constant, so there is nothing to remember to bump
+/// when editing `build_schema`. Note that a non-schema change to the document
+/// encoding in `write_index` (e.g. facet path format) won't be caught here;
+/// if you make such a change, bump the salt below.
+const INDEX_FORMAT_SALT: u64 = 0;
+
+fn schema_fingerprint(schema: &Schema) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    INDEX_FORMAT_SALT.hash(&mut hasher);
+    for (_, entry) in schema.fields() {
+        entry.name().hash(&mut hasher);
+        // `FieldType` doesn't implement `Hash`, but its `Debug` output captures
+        // the variant and all of its options, which is what we care about.
+        format!("{:?}", entry.field_type()).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
     // We want to store our data someplace sane, so we're gonna use the directories library to
     // decide where all this data goes.
     let dirs = ProjectDirs::from("org", "Hack Commons", "Bible-App")
         .ok_or_else(|| io::Error::other("unable to initialize project directory"))?;
 
-    // Well need to ensure the directory exists. That's easy, but I'm not sure how to know if
+    // We'll need to ensure the directory exists. That's easy, but I'm not sure how to know if
     // there is an existing index in an existing directory. That seems important.
 
     let index_path = dirs.data_dir().join("bible_idx");
@@ -424,18 +450,53 @@ fn initialize_search() -> tantivy::Result<(Index, SearchFields)> {
 
     let (schema, fields) = build_schema();
     let index_dir = MmapDirectory::open(&index_path)?;
+    let sentinel = index_path.join("schema_version");
+    let fingerprint = schema_fingerprint(&schema);
 
     if !tantivy::Index::exists(&index_dir)? {
-        let index = Index::create_in_dir(index_path, schema)?;
-
-        /// 500 megabytes
-        const ARENA_SIZE: usize = 0x100000 * 500;
-        write_index(Translation::Kjv, &fields, &mut index.writer(ARENA_SIZE)?)?;
-        write_index(Translation::Asv, &fields, &mut index.writer(ARENA_SIZE)?)?;
-        Ok((index, fields))
-    } else {
-        Ok((tantivy::Index::open(index_dir)?, fields))
+        // No index on disk yet — build everything from scratch.
+        return create_index(&index_path, schema, &fields, fingerprint);
     }
+
+    // An index exists. Rebuild unless the sentinel matches the current schema
+    // fingerprint. A missing sentinel means the index predates versioning and
+    // can't be trusted to be compatible; a mismatch means the schema has changed.
+    let compatible =
+        std::fs::read_to_string(&sentinel).ok().and_then(|s| s.trim().parse::<u64>().ok())
+            == Some(fingerprint);
+
+    if !compatible {
+        std::fs::remove_dir_all(&index_path)?;
+        std::fs::create_dir_all(&index_path)?;
+        return create_index(&index_path, schema, &fields, fingerprint);
+    }
+
+    Ok((tantivy::Index::open(index_dir)?, fields))
+}
+
+fn create_index(
+    index_path: &Path,
+    schema: Schema,
+    fields: &SearchFields,
+    fingerprint: u64,
+) -> tantivy::Result<(Index, SearchFields)> {
+    let index = Index::create_in_dir(index_path, schema)?;
+
+    /// 500 megabytes
+    const ARENA_SIZE: usize = 0x100000 * 500;
+    write_index(Translation::Kjv, fields, &mut index.writer(ARENA_SIZE)?)?;
+    write_index(Translation::Asv, fields, &mut index.writer(ARENA_SIZE)?)?;
+
+    // Stamp the index with the current schema fingerprint so future runs can
+    // tell whether the on-disk format is still compatible.
+    write_version(&index_path.join("schema_version"), fingerprint)?;
+
+    Ok((index, *fields))
+}
+
+fn write_version(path: &Path, fingerprint: u64) -> tantivy::Result<()> {
+    std::fs::write(path, fingerprint.to_string())?;
+    Ok(())
 }
 
 fn write_index(

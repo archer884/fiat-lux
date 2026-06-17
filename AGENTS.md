@@ -72,8 +72,16 @@ See `Location::from_id` and `parse_verses_with_id`.
   location facet (for passage lookup) or a parsed content query (for search).
 - The index is created on first run under
   `ProjectDirs::from("org", "Hack Commons", "Bible-App").data_dir()/bible_idx`
-  and reopened thereafter. To rebuild, delete that directory. Index writers
-  use a 500 MB arena.
+  and reopened thereafter. To force a rebuild, delete that directory. Index
+  writers use a 500 MB arena.
+- Schema versioning: a `schema_version` sentinel file alongside the index
+  stores a fingerprint derived from the `Schema` object itself (see
+  `schema_fingerprint` in `main.rs`). Any change to `build_schema` — adding,
+  removing, renaming, or reconfiguring a field — automatically changes the
+  fingerprint and triggers a rebuild on the next run; there is no manual
+  version constant to bump. A missing sentinel (index predates versioning) or
+  a mismatch also triggers a rebuild. For non-schema format changes (e.g.
+  facet path encoding in `write_index`), bump `INDEX_FORMAT_SALT`.
 - Note: `text.rs::from_document` parses the location facet back out by
   splitting on `'\0'` — tantivy serializes facet segments separated by NUL.
 
