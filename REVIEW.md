@@ -12,6 +12,8 @@ line[..8].parse::<u64>()... &line[9..]
 
 Assumes every line is ≥9 bytes with a tab at index 8. Safe today because the `.dat` files are bundled at compile time, but a malformed line would panic. Low risk given controlled data, but a `.filter(|l| l.len() >= 9)` guard or `split_once('\t')` would be more robust.
 
+> Note: "fixing" this would incur a significant performance hit, and it's not a bug; it's a deliberate decision re: the nature of our data.
+
 ## Minor / style
 
 **7. Duplicated width logic** — `main.rs:197-214`
