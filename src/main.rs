@@ -194,6 +194,13 @@ fn run(args: &Args) -> Result<()> {
 }
 
 fn format_texts(texts: &[Text], reference: &dyn Reference, translation: Translation) {
+    // Bail out early with a clear message rather than printing an empty table.
+    // This also avoids setting up the pager for a single line of output.
+    if texts.is_empty() {
+        println!("No verses found.");
+        return;
+    }
+
     #[cfg(feature = "pager")]
     let width = {
         let (w, h) = terminal_size::terminal_size()

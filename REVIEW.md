@@ -2,18 +2,6 @@
 
 Ordered by severity.
 
-## Bugs
-
-**2. `Verse::from_str` doesn't validate range ordering** — `location.rs:107`
-
-`"5-3"` parses to `Verse { start: 5, end: Some(3) }`, and `contains` then matches nothing (since `verse >= 5 && verse <= 3` is always false). The user gets silently empty output instead of an error. Should reject `end < start`.
-
-## UX gaps
-
-**3. No "no results" feedback** — `main.rs:172,190`
-
-Both the single-verse and multi-verse paths call `format_texts` / print directly. If a search or passage lookup returns zero verses (e.g. `fiat-lux enoch 1` or a search with no hits), the program prints nothing and exits 0. A "no verses found" message would help.
-
 ## Robustness
 
 **4. `text.rs::from_document` relies on tantivy's internal facet encoding** — `text.rs:19`
