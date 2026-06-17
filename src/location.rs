@@ -197,4 +197,89 @@ mod tests {
             ParseLocationError::Range { start, end } if start.get() == 18 && end.get() == 16
         ));
     }
+
+    #[test]
+    fn verse_contains_single() {
+        let v = Verse {
+            start: NonZero::new(16).unwrap(),
+            end: None,
+        };
+        assert!(v.contains(16));
+        assert!(!v.contains(15));
+        assert!(!v.contains(17));
+    }
+
+    #[test]
+    fn verse_contains_range() {
+        let v = Verse {
+            start: NonZero::new(16).unwrap(),
+            end: Some(NonZero::new(18).unwrap()),
+        };
+        assert!(v.contains(16));
+        assert!(v.contains(17));
+        assert!(v.contains(18));
+        assert!(!v.contains(15));
+        assert!(!v.contains(19));
+    }
+
+    #[test]
+    fn verse_contains_zero_is_false() {
+        let v = Verse {
+            start: NonZero::new(1).unwrap(),
+            end: None,
+        };
+        assert!(!v.contains(0));
+    }
+
+    #[test]
+    fn partial_location_chapter_only() {
+        let loc: PartialLocation = "3".parse().unwrap();
+        assert_eq!(loc.chapter, 3);
+        assert_eq!(loc.verse, None);
+    }
+
+    #[test]
+    fn partial_location_chapter_and_verse() {
+        let loc: PartialLocation = "3:16".parse().unwrap();
+        assert_eq!(loc.chapter, 3);
+        assert!(loc.verse.is_some());
+    }
+
+    #[test]
+    fn partial_location_chapter_and_verse_range() {
+        let loc: PartialLocation = "3:16-18".parse().unwrap();
+        assert_eq!(loc.chapter, 3);
+        let verse = loc.verse.unwrap();
+        assert!(verse.contains(17));
+        assert!(!verse.contains(19));
+    }
+
+    #[test]
+    fn partial_location_invalid_chapter() {
+        assert!("abc".parse::<PartialLocation>().is_err());
+    }
+
+    #[test]
+    fn location_from_id_round_trips() {
+        let loc = Location::from_id(1_001_001u64);
+        assert_eq!(loc.book, Book::Genesis);
+        assert_eq!(loc.chapter, 1);
+        assert_eq!(loc.verse, 1);
+    }
+
+    #[test]
+    fn location_from_id_john_3_16() {
+        let loc = Location::from_id(43_003_016u64);
+        assert_eq!(loc.book, Book::John);
+        assert_eq!(loc.chapter, 3);
+        assert_eq!(loc.verse, 16);
+    }
+
+    #[test]
+    fn location_from_id_revelation_22_21() {
+        let loc = Location::from_id(66_022_021u64);
+        assert_eq!(loc.book, Book::Revelation);
+        assert_eq!(loc.chapter, 22);
+        assert_eq!(loc.verse, 21);
+    }
 }

@@ -640,3 +640,67 @@ fn parse_verses_with_id(text: &str) -> impl Iterator<Item = (u64, &str)> {
         Some((id, line.get(9..)?))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_size_units() {
+        assert_eq!(100, ByteSize::from_str("100").unwrap().0);
+        assert_eq!(100 * 1024, ByteSize::from_str("100KB").unwrap().0);
+        assert_eq!(500 * 1024 * 1024, ByteSize::from_str("500MB").unwrap().0);
+        assert_eq!(2 * 1024 * 1024 * 1024, ByteSize::from_str("2GB").unwrap().0);
+    }
+
+    #[test]
+    fn byte_size_case_insensitive() {
+        assert_eq!(
+            ByteSize::from_str("500mb").unwrap().0,
+            ByteSize::from_str("500MB").unwrap().0
+        );
+        assert_eq!(
+            ByteSize::from_str("2g").unwrap().0,
+            ByteSize::from_str("2GB").unwrap().0
+        );
+        assert_eq!(
+            ByteSize::from_str("100k").unwrap().0,
+            ByteSize::from_str("100KB").unwrap().0
+        );
+    }
+
+    #[test]
+    fn byte_size_invalid() {
+        assert!(ByteSize::from_str("abc").is_err());
+        assert!(ByteSize::from_str("").is_err());
+        assert!(ByteSize::from_str("500TB").is_err());
+        assert!(ByteSize::from_str("MB").is_err());
+    }
+
+    #[test]
+    fn parse_verses_valid_lines() {
+        let data = "01001001\tIn the beginning God created the heaven and the earth.\n\
+                    01001002\tAnd the earth was without form, and void.";
+        let verses: Vec<_> = parse_verses_with_id(data).collect();
+        assert_eq!(verses.len(), 2);
+        assert_eq!(verses[0].0, 1_001_001);
+        assert_eq!(
+            verses[0].1,
+            "In the beginning God created the heaven and the earth."
+        );
+        assert_eq!(verses[1].0, 1_001_002);
+    }
+
+    #[test]
+    fn parse_verses_skips_malformed() {
+        // Lines that are too short or lack a tab are silently skipped.
+        let data = "01001001\tValid line\n\
+                    short\n\
+                    \n\
+                    01001004\tAlso valid";
+        let verses: Vec<_> = parse_verses_with_id(data).collect();
+        assert_eq!(verses.len(), 2);
+        assert_eq!(verses[0].0, 1_001_001);
+        assert_eq!(verses[1].0, 1_001_004);
+    }
+}

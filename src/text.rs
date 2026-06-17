@@ -86,3 +86,49 @@ pub struct Chapter {
     pub book: Book,
     pub chapter: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::Book;
+
+    fn text(book: Book, chapter: u16, verse: u16, content: &str) -> Text {
+        Text {
+            book,
+            chapter,
+            verse,
+            content: content.into(),
+        }
+    }
+
+    #[test]
+    fn equal_when_content_differs() {
+        // Two texts at the same location but with different content (e.g. from
+        // different translations) should compare equal.
+        let a = text(Book::John, 3, 16, "For God so loved...");
+        let b = text(Book::John, 3, 16, "For God so loved the world...");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn not_equal_when_location_differs() {
+        let a = text(Book::John, 3, 16, "same content");
+        let b = text(Book::John, 3, 17, "same content");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ordering_by_book_then_chapter_then_verse() {
+        let mut verses = [
+            text(Book::John, 3, 17, ""),
+            text(Book::Genesis, 1, 1, ""),
+            text(Book::John, 3, 16, ""),
+            text(Book::John, 1, 1, ""),
+        ];
+        verses.sort();
+        assert_eq!(verses[0], text(Book::Genesis, 1, 1, ""));
+        assert_eq!(verses[1], text(Book::John, 1, 1, ""));
+        assert_eq!(verses[2], text(Book::John, 3, 16, ""));
+        assert_eq!(verses[3], text(Book::John, 3, 17, ""));
+    }
+}

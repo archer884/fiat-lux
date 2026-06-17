@@ -94,3 +94,63 @@ fn book_slug(book: Book) -> &'static str {
         Book::Revelation => "revelation",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Translation;
+    use crate::book::Book;
+    use crate::location::Location;
+    use crate::text::Chapter;
+
+    #[test]
+    fn url_for_single_verse() {
+        let loc = Location {
+            book: Book::John,
+            chapter: 3,
+            verse: 16,
+        };
+        assert_eq!(
+            Biblia.url(&loc, Translation::Kjv),
+            "https://biblia.com/bible/KJV/john/3/16"
+        );
+    }
+
+    #[test]
+    fn url_for_chapter() {
+        let ch = Chapter {
+            book: Book::John,
+            chapter: 3,
+        };
+        assert_eq!(
+            Biblia.url(&ch, Translation::Kjv),
+            "https://biblia.com/bible/KJV/john/3"
+        );
+    }
+
+    #[test]
+    fn url_asv_translation() {
+        let loc = Location {
+            book: Book::Genesis,
+            chapter: 1,
+            verse: 1,
+        };
+        assert_eq!(
+            Biblia.url(&loc, Translation::Asv),
+            "https://biblia.com/bible/ASV/genesis/1/1"
+        );
+    }
+
+    #[test]
+    fn url_numbered_book_slug() {
+        let loc = Location {
+            book: Book::Kings1,
+            chapter: 19,
+            verse: 12,
+        };
+        assert_eq!(
+            Biblia.url(&loc, Translation::Kjv),
+            "https://biblia.com/bible/KJV/1kings/19/12"
+        );
+    }
+}

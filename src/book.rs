@@ -416,13 +416,65 @@ impl ParseBookError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn first_numeric_nonnumeric_transition() {
-        use super::first_numeric_nonnumeric_transition as test;
-        assert_eq!(Some(2), test("1 Kings"));
-        assert_eq!(Some(1), test("1Kings"));
-        assert_eq!(Some(5), test("Kings1"));
-        assert_eq!(Some(6), test("Kings 1"));
-        assert_eq!(None, test("Exodus"));
+        use super::first_numeric_nonnumeric_transition as find;
+        assert_eq!(Some(2), find("1 Kings"));
+        assert_eq!(Some(1), find("1Kings"));
+        assert_eq!(Some(5), find("Kings1"));
+        assert_eq!(Some(6), find("Kings 1"));
+        assert_eq!(None, find("Exodus"));
+    }
+
+    #[test]
+    fn book_simple_names() {
+        assert_eq!(Book::Genesis, "Genesis".parse().unwrap());
+        assert_eq!(Book::Exodus, "Exodus".parse().unwrap());
+        assert_eq!(Book::Psalms, "Psalms".parse().unwrap());
+        assert_eq!(Book::Revelation, "Revelation".parse().unwrap());
+    }
+
+    #[test]
+    fn book_case_insensitive() {
+        assert_eq!(Book::Genesis, "genesis".parse().unwrap());
+        assert_eq!(Book::Genesis, "GENESIS".parse().unwrap());
+        assert_eq!(Book::Malachi, "MALACHI".parse().unwrap());
+    }
+
+    #[test]
+    fn book_numbered_formats() {
+        // All three numbering conventions should resolve to the same book.
+        assert_eq!(Book::Kings1, "1 Kings".parse().unwrap());
+        assert_eq!(Book::Kings1, "1Kings".parse().unwrap());
+        assert_eq!(Book::Kings1, "Kings1".parse().unwrap());
+        assert_eq!(Book::Kings1, "Kings 1".parse().unwrap());
+
+        assert_eq!(Book::Corinthians2, "2 Corinthians".parse().unwrap());
+        assert_eq!(Book::Corinthians2, "2Corinthians".parse().unwrap());
+    }
+
+    #[test]
+    fn book_john_disambiguation() {
+        assert_eq!(Book::John, "John".parse().unwrap());
+        assert_eq!(Book::John1, "1 John".parse().unwrap());
+        assert_eq!(Book::John2, "2 John".parse().unwrap());
+        assert_eq!(Book::John3, "3 John".parse().unwrap());
+    }
+
+    #[test]
+    fn book_songs_abbreviation() {
+        assert_eq!(Book::SongofSongs, "Songs".parse().unwrap());
+        assert_eq!(Book::SongofSongs, "Song of Songs".parse().unwrap());
+    }
+
+    #[test]
+    fn book_invalid() {
+        assert!("Enoch".parse::<Book>().is_err());
+        assert!("".parse::<Book>().is_err());
+        assert!("3 Maccabees".parse::<Book>().is_err());
+        // Numbers without a name aren't valid.
+        assert!("1".parse::<Book>().is_err());
     }
 }
