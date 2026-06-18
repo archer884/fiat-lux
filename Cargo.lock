@@ -186,9 +186,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chronograf"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90270179b8ef3ceaa01acd946b54291f72f98e205f15b0b0575e749f4788cd2c"
+checksum = "58f81848b0f4c5a63071d24e16f447aa4b55c646aa8f7e4764cad14e69f99ca4"
 dependencies = [
  "quanta",
 ]
